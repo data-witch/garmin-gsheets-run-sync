@@ -86,7 +86,7 @@ git branch -M main
 
     - Go to your GitHub repository
     - Click Settings → Secrets and variables → Actions
-    - Click New repository secret and add these three secrets:
+    - Click New repository secret and add these four secrets:
 
 * Secret 1: GARMIN_EMAIL
 ```
