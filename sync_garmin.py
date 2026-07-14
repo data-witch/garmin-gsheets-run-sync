@@ -1,174 +1,3 @@
-# import os
-# import json
-# from garminconnect import Garmin
-# from google.oauth2.service_account import Credentials
-# import gspread
-# from datetime import datetime, timedelta
-
-# # Load environment variables from .env file if it exists (for local testing)
-# if os.path.exists('.env'):
-#     try:
-#         from dotenv import load_dotenv
-#         load_dotenv()
-#     except ImportError:
-#         print("Warning: python-dotenv not installed. Install with: pip install python-dotenv")
-#         pass
-
-# def format_duration(seconds):
-#     """Convert seconds to minutes (rounded to 2 decimals)"""
-#     return round(seconds / 60, 2) if seconds else 0
-
-# def format_pace(distance_meters, duration_seconds):
-#     """Calculate pace in min/km"""
-#     if not distance_meters or not duration_seconds:
-#         return 0
-#     distance_km = distance_meters / 1000
-#     pace_seconds = duration_seconds / distance_km
-#     return round(pace_seconds / 60, 2)  # Convert to min/km
-
-# def main():
-#     print("Starting Garmin running activities sync...")
-    
-#     # Get credentials from environment variables
-#     garmin_email = os.environ.get('GARMIN_EMAIL')
-#     garmin_password = os.environ.get('GARMIN_PASSWORD')
-#     google_creds_json = os.environ.get('GOOGLE_CREDENTIALS')
-#     sheet_id = os.environ.get('SHEET_ID')  # Add sheet ID from environment
-    
-#     # For local testing: try to load from credentials.json file
-#     if not google_creds_json and os.path.exists('credentials.json'):
-#         print("Loading Google credentials from credentials.json...")
-#         with open('credentials.json', 'r') as f:
-#             google_creds_json = f.read()
-    
-#     if not all([garmin_email, garmin_password, google_creds_json, sheet_id]):
-#         print("❌ Missing required environment variables")
-#         print(f"   GARMIN_EMAIL: {'✓' if garmin_email else '✗'}")
-#         print(f"   GARMIN_PASSWORD: {'✓' if garmin_password else '✗'}")
-#         print(f"   GOOGLE_CREDENTIALS: {'✓' if google_creds_json else '✗'}")
-#         print(f"   SHEET_ID: {'✓' if sheet_id else '✗'}")
-#         return
-    
-#     # Connect to Garmin
-#     print("Connecting to Garmin...")
-#     try:
-#         garmin = Garmin(garmin_email, garmin_password)
-#         garmin.login()
-#         print("✅ Connected to Garmin")
-#     except Exception as e:
-#         print(f"❌ Failed to connect to Garmin: {e}")
-#         return
-    
-#     # Get recent activities (last 7 days)
-#     print("Fetching recent activities...")
-#     try:
-#         activities = garmin.get_activities(0, 20)  # Get last 20 activities
-#         print(f"Found {len(activities)} total activities")
-#     except Exception as e:
-#         print(f"❌ Failed to fetch activities: {e}")
-#         return
-    
-#     # Filter for running activities only
-#     running_activities = [
-#         activity for activity in activities 
-#         if activity.get('activityType', {}).get('typeKey', '').lower() in ['running', 'treadmill_running', 'trail_running']
-#     ]
-    
-#     print(f"Found {len(running_activities)} running activities")
-    
-#     if not running_activities:
-#         print("No running activities found in recent data")
-#         return
-    
-#     # Connect to Google Sheets
-#     print("Connecting to Google Sheets...")
-#     try:
-#         creds_dict = json.loads(google_creds_json)
-#         creds = Credentials.from_service_account_info(
-#             creds_dict,
-#             scopes=[
-#                 'https://www.googleapis.com/auth/spreadsheets',
-#                 'https://www.googleapis.com/auth/drive'
-#             ]
-#         )
-#         client = gspread.authorize(creds)
-#         sheet = client.open("Garmin Data").sheet1
-#         print("✅ Connected to Google Sheets")
-#     except Exception as e:
-#         print(f"❌ Failed to connect to Google Sheets: {e}")
-#         return
-    
-#     # Get existing dates to avoid duplicates
-#     try:
-#         existing_data = sheet.get_all_values()
-#         existing_dates = set()
-#         if len(existing_data) > 1:  # If there's data beyond headers
-#             for row in existing_data[1:]:  # Skip header row
-#                 if row and row[0]:  # If date column exists
-#                     existing_dates.add(row[0])
-#         print(f"Found {len(existing_dates)} existing entries")
-#     except Exception as e:
-#         print(f"Warning: Could not check existing data: {e}")
-#         existing_dates = set()
-    
-#     # Process each running activity
-#     new_entries = 0
-#     for activity in running_activities:
-#         try:
-#             # Parse activity date
-#             activity_date = activity.get('startTimeLocal', '')[:10]  # Get YYYY-MM-DD
-            
-#             # Skip if already in sheet
-#             if activity_date in existing_dates:
-#                 print(f"Skipping {activity_date} - already exists")
-#                 continue
-            
-#             # Extract metrics
-#             activity_name = activity.get('activityName', 'Run')
-#             distance_meters = activity.get('distance', 0)
-#             distance_km = round(distance_meters / 1000, 2) if distance_meters else 0
-#             duration_seconds = activity.get('duration', 0)
-#             duration_min = format_duration(duration_seconds)
-#             avg_pace = format_pace(distance_meters, duration_seconds)
-#             avg_hr = activity.get('averageHR', 0) or 0
-#             max_hr = activity.get('maxHR', 0) or 0
-#             calories = activity.get('calories', 0) or 0
-#             avg_cadence = activity.get('averageRunningCadenceInStepsPerMinute', 0) or 0
-#             elevation_gain = round(activity.get('elevationGain', 0), 1) if activity.get('elevationGain') else 0
-#             activity_type = activity.get('activityType', {}).get('typeKey', 'running')
-            
-#             # Prepare row
-#             row = [
-#                 activity_date,
-#                 activity_name,
-#                 distance_km,
-#                 duration_min,
-#                 avg_pace,
-#                 avg_hr,
-#                 max_hr,
-#                 calories,
-#                 avg_cadence,
-#                 elevation_gain,
-#                 activity_type
-#             ]
-            
-#             # Append to sheet
-#             sheet.append_row(row)
-#             print(f"✅ Added: {activity_date} - {activity_name} ({distance_km} km)")
-#             new_entries += 1
-            
-#         except Exception as e:
-#             print(f"❌ Error processing activity: {e}")
-#             continue
-    
-#     if new_entries > 0:
-#         print(f"\n🎉 Successfully added {new_entries} new running activities!")
-#     else:
-#         print("\n✓ No new activities to add")
-
-# if __name__ == "__main__":
-#     main()
-
 import os
 import json
 from garminconnect import Garmin
@@ -183,27 +12,72 @@ if os.path.exists('.env'):
         load_dotenv()
     except ImportError:
         print("Warning: python-dotenv not installed. Install with: pip install python-dotenv")
-        pass
+
+SYNC_DAYS = int(os.environ.get('SYNC_DAYS', 30))
+
+EXPECTED_HEADERS = [
+    "Date", "Activity Name", "Distance (km)", "Duration (min)", "Avg Pace (min/km)",
+    "Avg HR", "Max HR", "Calories", "Avg Cadence", "Elevation Gain (m)", "Activity Type",
+    "Steps", "Floors", "Intensity Minutes", "Stress", "Body Battery",
+    "HRV Avg", "HRV Status", "Respiration", "SpO2",
+    "Total Sleep (min)", "Deep Sleep (min)", "Light Sleep (min)", "REM Sleep (min)", "Awake (min)",
+    "Fitness Age", "Menstrual Phase", "Menstrual Flow",
+]
+
 
 def format_duration(seconds):
-    """Convert seconds to minutes (rounded to 2 decimals)"""
+    """Convert seconds to minutes (rounded to 2 decimals)."""
     return round(seconds / 60, 2) if seconds else 0
 
+
 def format_pace(distance_meters, duration_seconds):
-    """Calculate pace in min/km"""
+    """Calculate pace in min/km."""
     if not distance_meters or not duration_seconds:
         return 0
     distance_km = distance_meters / 1000
     pace_seconds = duration_seconds / distance_km
-    return round(pace_seconds / 60, 2)  # Convert to min/km
+    return round(pace_seconds / 60, 2)
 
-def safe_get(data, key, default=0):
-    """Safely get value from dict, return default if None"""
-    val = data.get(key)
-    return val if val is not None else default
 
-def get_daily_metrics(garmin, date):
-    """Get all daily health metrics for a given date"""
+def seconds_to_minutes(seconds):
+    """Convert seconds to minutes (rounded to 1 decimal)."""
+    return round(seconds / 60, 1) if seconds else 0
+
+
+def safe_call(func, *args, default=None):
+    """Call Garmin API method and return default on any error."""
+    try:
+        result = func(*args)
+        return result if result is not None else default
+    except Exception:
+        return default
+
+
+def ensure_headers(sheet):
+    """Ensure sheet has all required column headers."""
+    try:
+        current_headers = sheet.row_values(1)
+        if current_headers != EXPECTED_HEADERS:
+            sheet.update('A1', [EXPECTED_HEADERS], value_input_option='RAW')
+            print("✅ Updated sheet headers")
+    except Exception as e:
+        print(f"Warning: Could not update headers: {e}")
+
+
+def get_fitness_age(garmin):
+    """Fetch fitness age once on login."""
+    today = datetime.today().strftime('%Y-%m-%d')
+    data = safe_call(garmin.get_fitnessage_data, today, default={}) or {}
+    fitness_age = data.get('fitnessAge') or data.get('currentFitnessAge')
+    if fitness_age is not None:
+        return fitness_age
+
+    max_metrics = safe_call(garmin.get_max_metrics, today, default={}) or {}
+    return max_metrics.get('fitnessAge', '') or ''
+
+
+def get_daily_metrics(garmin, date_str, fitness_age):
+    """Fetch daily health metrics for a given date."""
     metrics = {
         'steps': 0,
         'floors': 0,
@@ -213,156 +87,159 @@ def get_daily_metrics(garmin, date):
         'hrv_avg': 0,
         'hrv_status': '',
         'respiration': 0,
-        'spo2': 0
-    }
-    
-    try:
-        wellness = garmin.get_wellness_data(date)
-        if wellness:
-            metrics['steps'] = safe_get(wellness, 'totalSteps')
-            metrics['floors'] = safe_get(wellness, 'totalFloors')
-            metrics['intensity_minutes'] = safe_get(wellness, 'intensityMinutes')
-            metrics['respiration'] = safe_get(wellness, 'respirationRate')
-    except Exception as e:
-        print(f"   ⚠️  Could not get wellness data: {e}")
-    
-    try:
-        stress_data = garmin.get_stress_data(date)
-        if stress_data:
-            metrics['stress'] = safe_get(stress_data, 'stressLevel')
-    except Exception as e:
-        print(f"   ⚠️  Could not get stress data: {e}")
-    
-    try:
-        battery_data = garmin.get_body_battery_data(date, date)
-        if battery_data and len(battery_data) > 0:
-            metrics['body_battery'] = safe_get(battery_data[0], 'value')
-    except Exception as e:
-        print(f"   ⚠️  Could not get body battery: {e}")
-    
-    try:
-        hrv_data = garmin.get_hrv_data(date)
-        if hrv_data:
-            metrics['hrv_avg'] = safe_get(hrv_data, 'avgHRV')
-            metrics['hrv_status'] = safe_get(hrv_data, 'status', '')
-    except Exception as e:
-        print(f"   ⚠️  Could not get HRV data: {e}")
-    
-    try:
-        spo2_data = garmin.get_spo2_data(date)
-        if spo2_data and len(spo2_data) > 0:
-            readings = [reading.get('value', 0) for reading in spo2_data if reading.get('value')]
-            if readings:
-                metrics['spo2'] = round(sum(readings) / len(readings))
-    except Exception as e:
-        print(f"   ⚠️  Could not get SpO2 data: {e}")
-    
-    return metrics
-
-def get_sleep_data(garmin, date):
-    """Get sleep metrics for a given date"""
-    sleep_info = {
+        'spo2': 0,
         'total_sleep_min': 0,
         'deep_sleep_min': 0,
         'light_sleep_min': 0,
         'rem_sleep_min': 0,
-        'awake_min': 0
+        'awake_min': 0,
+        'menstrual_phase': '',
+        'menstrual_flow': '',
+        'fitness_age': fitness_age,
     }
-    
-    try:
-        sleep_data = garmin.get_sleep_data(date)
-        if sleep_data and 'dailySleepDTO' in sleep_data:
-            dto = sleep_data['dailySleepDTO']
-            sleep_info['total_sleep_min'] = safe_get(dto, 'sleepTimeSeconds', 0) // 60
-            sleep_info['deep_sleep_min'] = safe_get(dto, 'deepSleepSeconds', 0) // 60
-            sleep_info['light_sleep_min'] = safe_get(dto, 'lightSleepSeconds', 0) // 60
-            sleep_info['rem_sleep_min'] = safe_get(dto, 'remSleepSeconds', 0) // 60
-            sleep_info['awake_min'] = safe_get(dto, 'awakeTimeSeconds', 0) // 60
-    except Exception as e:
-        print(f"   ⚠️  Could not get sleep data: {e}")
-    
-    return sleep_info
 
-def get_fitness_age(garmin):
-    """Get fitness age (fetched once)"""
-    try:
-        user_settings = garmin.get_user_settings()
-        if user_settings:
-            return safe_get(user_settings, 'fitnessAge', '')
-    except Exception as e:
-        print(f"   ⚠️  Could not get fitness age: {e}")
-    return ''
+    summary = safe_call(garmin.get_stats, date_str, default={}) or {}
+    metrics['steps'] = summary.get('totalSteps', 0) or 0
+    metrics['floors'] = summary.get('floorsAscended', 0) or 0
 
-def get_menstrual_cycle(garmin, date):
-    """Get menstrual cycle data for a given date"""
-    try:
-        cycle_data = garmin.get_menstrual_cycle()
-        if cycle_data and 'cycleData' in cycle_data:
-            for cycle in cycle_data['cycleData']:
-                if cycle.get('date') == date:
-                    return {
-                        'phase': cycle.get('phase', ''),
-                        'flow': cycle.get('flow', '')
-                    }
-    except Exception as e:
-        print(f"   ⚠️  Could not get menstrual cycle data: {e}")
-    return {'phase': '', 'flow': ''}
+    intensity = safe_call(garmin.get_intensity_minutes_data, date_str, default={}) or {}
+    moderate = intensity.get('moderateMinutes', 0) or 0
+    vigorous = intensity.get('vigorousMinutes', 0) or 0
+    metrics['intensity_minutes'] = moderate + vigorous
+    if not metrics['intensity_minutes']:
+        metrics['intensity_minutes'] = (
+            (summary.get('moderateIntensityMinutes', 0) or 0)
+            + (summary.get('vigorousIntensityMinutes', 0) or 0)
+        )
 
-def update_sheet_headers(sheet):
-    """Force update headers in Google Sheet"""
-    headers = [
-        'Date', 'Activity Name', 'Distance (km)', 'Duration (min)',
-        'Avg Pace (min/km)', 'Avg HR', 'Max HR', 'Calories',
-        'Avg Cadence', 'Elevation Gain (m)', 'Activity Type',
-        'Steps', 'Floors', 'Intensity Minutes',
-        'Stress', 'Body Battery', 'HRV Avg', 'HRV Status',
-        'Respiration', 'SpO2',
-        'Total Sleep (min)', 'Deep Sleep (min)', 'Light Sleep (min)',
-        'REM Sleep (min)', 'Awake (min)',
-        'Fitness Age',
-        'Menstrual Phase', 'Menstrual Flow'
+    stress = safe_call(garmin.get_all_day_stress, date_str, default={}) or {}
+    if not stress:
+        stress = safe_call(garmin.get_stress_data, date_str, default={}) or {}
+    metrics['stress'] = stress.get('avgStressLevel', 0) or 0
+
+    body_battery_data = safe_call(garmin.get_body_battery, date_str, date_str, default=[]) or []
+    for entry in body_battery_data:
+        if entry.get('calendarDate') == date_str:
+            metrics['body_battery'] = (
+                entry.get('highestBodyBatteryValue')
+                or entry.get('bodyBatteryHighestValue')
+                or entry.get('charged')
+                or 0
+            )
+            break
+    if not metrics['body_battery']:
+        metrics['body_battery'] = summary.get('bodyBatteryHighestValue', 0) or 0
+
+    hrv = safe_call(garmin.get_hrv_data, date_str, default={}) or {}
+    hrv_summary = hrv.get('hrvSummary', hrv) if isinstance(hrv, dict) else {}
+    metrics['hrv_avg'] = hrv_summary.get('lastNightAvg', 0) or hrv_summary.get('weeklyAvg', 0) or 0
+    metrics['hrv_status'] = hrv_summary.get('status', '') or hrv_summary.get('hrvStatus', '') or ''
+
+    respiration = safe_call(garmin.get_respiration_data, date_str, default={}) or {}
+    metrics['respiration'] = (
+        respiration.get('avgWakingRespirationValue')
+        or respiration.get('avgSleepRespirationValue')
+        or respiration.get('avgWakingRespiration')
+        or 0
+    ) or 0
+
+    spo2 = safe_call(garmin.get_spo2_data, date_str, default={}) or {}
+    metrics['spo2'] = (
+        spo2.get('averageSpO2')
+        or spo2.get('avgSleepSpO2')
+        or spo2.get('lowestSpO2')
+        or 0
+    ) or 0
+
+    sleep = safe_call(garmin.get_sleep_data, date_str, default={}) or {}
+    sleep_dto = sleep.get('dailySleepDTO', {}) if isinstance(sleep, dict) else {}
+    metrics['total_sleep_min'] = seconds_to_minutes(sleep_dto.get('sleepTimeSeconds', 0))
+    metrics['deep_sleep_min'] = seconds_to_minutes(sleep_dto.get('deepSleepSeconds', 0))
+    metrics['light_sleep_min'] = seconds_to_minutes(sleep_dto.get('lightSleepSeconds', 0))
+    metrics['rem_sleep_min'] = seconds_to_minutes(sleep_dto.get('remSleepSeconds', 0))
+    metrics['awake_min'] = seconds_to_minutes(sleep_dto.get('awakeSleepSeconds', 0))
+
+    menstrual = safe_call(garmin.get_menstrual_data_for_date, date_str, default={}) or {}
+    metrics['menstrual_phase'] = (
+        menstrual.get('phase', '')
+        or menstrual.get('menstrualPhase', '')
+        or menstrual.get('phaseType', '')
+        or ''
+    )
+    metrics['menstrual_flow'] = (
+        menstrual.get('flowLevel', '')
+        or menstrual.get('flow', '')
+        or menstrual.get('flowType', '')
+        or ''
+    )
+
+    return metrics
+
+
+def get_avg_cadence(activity):
+    """Extract cadence from activity, supporting different activity types."""
+    return (
+        activity.get('averageRunningCadenceInStepsPerMinute')
+        or activity.get('averageBikingCadenceInRevPerMinute')
+        or activity.get('averageCadence')
+        or 0
+    ) or 0
+
+
+def build_activity_row(activity, daily_metrics):
+    """Build a sheet row from activity and daily metrics."""
+    activity_date = activity.get('startTimeLocal', '')[:10]
+    activity_name = activity.get('activityName', 'Activity')
+    distance_meters = activity.get('distance', 0) or 0
+    distance_km = round(distance_meters / 1000, 2) if distance_meters else 0
+    duration_seconds = activity.get('duration', 0) or 0
+    activity_type = activity.get('activityType', {}).get('typeKey', '')
+
+    return [
+        activity_date,
+        activity_name,
+        distance_km,
+        format_duration(duration_seconds),
+        format_pace(distance_meters, duration_seconds),
+        activity.get('averageHR', 0) or 0,
+        activity.get('maxHR', 0) or 0,
+        activity.get('calories', 0) or 0,
+        get_avg_cadence(activity),
+        round(activity.get('elevationGain', 0), 1) if activity.get('elevationGain') else 0,
+        activity_type,
+        daily_metrics['steps'],
+        daily_metrics['floors'],
+        daily_metrics['intensity_minutes'],
+        daily_metrics['stress'],
+        daily_metrics['body_battery'],
+        daily_metrics['hrv_avg'],
+        daily_metrics['hrv_status'],
+        daily_metrics['respiration'],
+        daily_metrics['spo2'],
+        daily_metrics['total_sleep_min'],
+        daily_metrics['deep_sleep_min'],
+        daily_metrics['light_sleep_min'],
+        daily_metrics['rem_sleep_min'],
+        daily_metrics['awake_min'],
+        daily_metrics['fitness_age'],
+        daily_metrics['menstrual_phase'],
+        daily_metrics['menstrual_flow'],
     ]
-    
-    try:
-        # Try to update existing headers
-        current_headers = sheet.row_values(1)
-        print(f"Current headers: {len(current_headers)} columns")
-        print(f"Expected headers: {len(headers)} columns")
-        
-        if len(current_headers) != len(headers):
-            # Clear first row and rewrite all headers
-            print("Updating headers...")
-            # Write all headers in one go
-            for i, header in enumerate(headers, start=1):
-                sheet.update_cell(1, i, header)
-            print(f"✅ Headers updated to {len(headers)} columns")
-        else:
-            print("✅ Headers already correct")
-            
-    except Exception as e:
-        print(f"⚠️  Error updating headers: {e}")
-        # Fallback: try to recreate header row
-        try:
-            sheet.insert_row(headers, 1)
-            print("✅ Headers inserted successfully")
-        except Exception as e2:
-            print(f"❌ Failed to insert headers: {e2}")
+
 
 def main():
-    print("Starting Garmin comprehensive sync...")
-    
-    # Get credentials from environment variables
+    print(f"Starting Garmin activities sync (last {SYNC_DAYS} days)...")
+
     garmin_email = os.environ.get('GARMIN_EMAIL')
     garmin_password = os.environ.get('GARMIN_PASSWORD')
     google_creds_json = os.environ.get('GOOGLE_CREDENTIALS')
     sheet_id = os.environ.get('SHEET_ID')
-    
-    # For local testing: try to load from credentials.json file
+
     if not google_creds_json and os.path.exists('credentials.json'):
         print("Loading Google credentials from credentials.json...")
         with open('credentials.json', 'r') as f:
             google_creds_json = f.read()
-    
+
     if not all([garmin_email, garmin_password, google_creds_json, sheet_id]):
         print("❌ Missing required environment variables")
         print(f"   GARMIN_EMAIL: {'✓' if garmin_email else '✗'}")
@@ -370,8 +247,7 @@ def main():
         print(f"   GOOGLE_CREDENTIALS: {'✓' if google_creds_json else '✗'}")
         print(f"   SHEET_ID: {'✓' if sheet_id else '✗'}")
         return
-    
-    # Connect to Garmin
+
     print("Connecting to Garmin...")
     try:
         garmin = Garmin(garmin_email, garmin_password)
@@ -380,13 +256,28 @@ def main():
     except Exception as e:
         print(f"❌ Failed to connect to Garmin: {e}")
         return
-    
-    # Get fitness age once
+
     fitness_age = get_fitness_age(garmin)
     if fitness_age:
-        print(f"   Fitness Age: {fitness_age}")
-    
-    # Connect to Google Sheets
+        print(f"Fitness Age: {fitness_age}")
+
+    end_date = datetime.today()
+    start_date = end_date - timedelta(days=SYNC_DAYS)
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+
+    print(f"Fetching activities from {start_str} to {end_str}...")
+    try:
+        activities = garmin.get_activities_by_date(start_str, end_str)
+        print(f"Found {len(activities)} activities")
+    except Exception as e:
+        print(f"❌ Failed to fetch activities: {e}")
+        return
+
+    if not activities:
+        print("No activities found in the selected period")
+        return
+
     print("Connecting to Google Sheets...")
     try:
         creds_dict = json.loads(google_creds_json)
@@ -394,137 +285,61 @@ def main():
             creds_dict,
             scopes=[
                 'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive'
-            ]
+                'https://www.googleapis.com/auth/drive',
+            ],
         )
         client = gspread.authorize(creds)
-        sheet = client.open("Garmin Data").sheet1
+        sheet = client.open_by_key(sheet_id).sheet1
         print("✅ Connected to Google Sheets")
     except Exception as e:
         print(f"❌ Failed to connect to Google Sheets: {e}")
         return
-    
-    # FORCE UPDATE HEADERS - always run this
-    print("\n📋 Updating sheet headers...")
-    update_sheet_headers(sheet)
-    
-    # Get existing dates to avoid duplicates
+
+    ensure_headers(sheet)
+
+    existing_keys = set()
     try:
         existing_data = sheet.get_all_values()
-        existing_dates = set()
         if len(existing_data) > 1:
             for row in existing_data[1:]:
                 if row and row[0]:
-                    existing_dates.add(row[0])
-        print(f"Found {len(existing_dates)} existing entries")
+                    activity_name = row[1] if len(row) > 1 else ''
+                    existing_keys.add((row[0], activity_name))
+        print(f"Found {len(existing_keys)} existing entries")
     except Exception as e:
         print(f"Warning: Could not check existing data: {e}")
-        existing_dates = set()
-    
-    # Get recent activities (last 30 days)
-    print("\n📊 Fetching activities from last 30 days...")
-    try:
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=30)
-        activities = garmin.get_activities_by_date(
-            start_date.strftime("%Y-%m-%d"),
-            end_date.strftime("%Y-%m-%d")
-        )
-        print(f"Found {len(activities)} total activities")
-    except Exception as e:
-        print(f"❌ Failed to fetch activities: {e}")
-        return
-    
-    if not activities:
-        print("No activities found")
-        return
-    
-    # Process each activity
+
+    daily_cache = {}
     new_entries = 0
+
     for activity in activities:
         try:
             activity_date = activity.get('startTimeLocal', '')[:10]
-            if not activity_date:
+            activity_name = activity.get('activityName', 'Activity')
+            row_key = (activity_date, activity_name)
+
+            if row_key in existing_keys:
+                print(f"Skipping {activity_date} - {activity_name} (already exists)")
                 continue
-            
-            date_obj = datetime.strptime(activity_date, "%Y-%m-%d")
-            date_str = date_obj.strftime("%Y-%m-%d")
-            
-            # Skip if already in sheet
-            if date_str in existing_dates:
-                print(f"Skipping {date_str} - already exists")
-                continue
-            
-            print(f"\n📊 Processing {date_str}...")
-            
-            # Extract activity metrics
-            activity_name = activity.get('activityName', 'Unknown')
-            distance_meters = safe_get(activity, 'distance', 0)
-            distance_km = round(distance_meters / 1000, 2) if distance_meters else 0
-            duration_seconds = safe_get(activity, 'duration', 0)
-            duration_min = format_duration(duration_seconds)
-            avg_pace = format_pace(distance_meters, duration_seconds)
-            avg_hr = safe_get(activity, 'averageHR', 0)
-            max_hr = safe_get(activity, 'maxHR', 0)
-            calories = safe_get(activity, 'calories', 0)
-            avg_cadence = safe_get(activity, 'averageRunningCadenceInStepsPerMinute', 0)
-            elevation_gain = round(safe_get(activity, 'elevationGain', 0), 1)
-            activity_type = activity.get('activityType', {}).get('typeKey', 'unknown')
-            
-            # Get daily health metrics
-            daily_metrics = get_daily_metrics(garmin, date_str)
-            sleep_metrics = get_sleep_data(garmin, date_str)
-            cycle_data = get_menstrual_cycle(garmin, date_str)
-            
-            # Prepare row with all data
-            row = [
-                date_str,
-                activity_name,
-                distance_km,
-                duration_min,
-                avg_pace,
-                avg_hr,
-                max_hr,
-                calories,
-                avg_cadence,
-                elevation_gain,
-                activity_type,
-                daily_metrics['steps'],
-                daily_metrics['floors'],
-                daily_metrics['intensity_minutes'],
-                daily_metrics['stress'],
-                daily_metrics['body_battery'],
-                daily_metrics['hrv_avg'],
-                daily_metrics['hrv_status'],
-                daily_metrics['respiration'],
-                daily_metrics['spo2'],
-                sleep_metrics['total_sleep_min'],
-                sleep_metrics['deep_sleep_min'],
-                sleep_metrics['light_sleep_min'],
-                sleep_metrics['rem_sleep_min'],
-                sleep_metrics['awake_min'],
-                fitness_age,
-                cycle_data['phase'],
-                cycle_data['flow']
-            ]
-            
-            # Append to sheet
-            sheet.append_row(row)
-            print(f"✅ Added: {date_str} - {activity_name} ({distance_km} km)")
+
+            if activity_date not in daily_cache:
+                daily_cache[activity_date] = get_daily_metrics(garmin, activity_date, fitness_age)
+
+            row = build_activity_row(activity, daily_cache[activity_date])
+            sheet.append_row(row, value_input_option='USER_ENTERED')
+            print(f"✅ Added: {activity_date} - {activity_name}")
             new_entries += 1
-            
-            existing_dates.add(date_str)
-            
+            existing_keys.add(row_key)
+
         except Exception as e:
             print(f"❌ Error processing activity: {e}")
-            import traceback
-            traceback.print_exc()
             continue
-    
+
     if new_entries > 0:
-        print(f"\n🎉 Successfully added {new_entries} new days of data!")
+        print(f"\n🎉 Successfully added {new_entries} new activities!")
     else:
-        print("\n✓ No new data to add")
+        print("\n✓ No new activities to add")
+
 
 if __name__ == "__main__":
     main()
