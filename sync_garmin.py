@@ -217,7 +217,6 @@ def get_daily_metrics(garmin, date):
     }
     
     try:
-        # Get wellness data (includes steps, floors, intensity minutes)
         wellness = garmin.get_wellness_data(date)
         if wellness:
             metrics['steps'] = safe_get(wellness, 'totalSteps')
@@ -228,7 +227,6 @@ def get_daily_metrics(garmin, date):
         print(f"   ⚠️  Could not get wellness data: {e}")
     
     try:
-        # Get stress data
         stress_data = garmin.get_stress_data(date)
         if stress_data:
             metrics['stress'] = safe_get(stress_data, 'stressLevel')
@@ -236,7 +234,6 @@ def get_daily_metrics(garmin, date):
         print(f"   ⚠️  Could not get stress data: {e}")
     
     try:
-        # Get body battery
         battery_data = garmin.get_body_battery_data(date, date)
         if battery_data and len(battery_data) > 0:
             metrics['body_battery'] = safe_get(battery_data[0], 'value')
@@ -244,7 +241,6 @@ def get_daily_metrics(garmin, date):
         print(f"   ⚠️  Could not get body battery: {e}")
     
     try:
-        # Get HRV data
         hrv_data = garmin.get_hrv_data(date)
         if hrv_data:
             metrics['hrv_avg'] = safe_get(hrv_data, 'avgHRV')
@@ -253,10 +249,8 @@ def get_daily_metrics(garmin, date):
         print(f"   ⚠️  Could not get HRV data: {e}")
     
     try:
-        # Get SpO2 data (average for the day)
         spo2_data = garmin.get_spo2_data(date)
         if spo2_data and len(spo2_data) > 0:
-            # Calculate average SpO2 from all readings
             readings = [reading.get('value', 0) for reading in spo2_data if reading.get('value')]
             if readings:
                 metrics['spo2'] = round(sum(readings) / len(readings))
@@ -304,7 +298,6 @@ def get_menstrual_cycle(garmin, date):
     try:
         cycle_data = garmin.get_menstrual_cycle()
         if cycle_data and 'cycleData' in cycle_data:
-            # Find data for specific date
             for cycle in cycle_data['cycleData']:
                 if cycle.get('date') == date:
                     return {
@@ -316,7 +309,7 @@ def get_menstrual_cycle(garmin, date):
     return {'phase': '', 'flow': ''}
 
 def update_sheet_headers(sheet):
-    """Add headers to Google Sheet if they don't exist"""
+    """Force update headers in Google Sheet"""
     headers = [
         'Date', 'Activity Name', 'Distance (km)', 'Duration (min)',
         'Avg Pace (min/km)', 'Avg HR', 'Max HR', 'Calories',
@@ -331,15 +324,29 @@ def update_sheet_headers(sheet):
     ]
     
     try:
-        existing_headers = sheet.row_values(1)
-        if len(existing_headers) < len(headers):
-            # Update headers
+        # Try to update existing headers
+        current_headers = sheet.row_values(1)
+        print(f"Current headers: {len(current_headers)} columns")
+        print(f"Expected headers: {len(headers)} columns")
+        
+        if len(current_headers) != len(headers):
+            # Clear first row and rewrite all headers
+            print("Updating headers...")
+            # Write all headers in one go
             for i, header in enumerate(headers, start=1):
-                if i > len(existing_headers) or existing_headers[i-1] != header:
-                    sheet.update_cell(1, i, header)
-        print("✅ Headers updated")
+                sheet.update_cell(1, i, header)
+            print(f"✅ Headers updated to {len(headers)} columns")
+        else:
+            print("✅ Headers already correct")
+            
     except Exception as e:
-        print(f"⚠️  Could not update headers: {e}")
+        print(f"⚠️  Error updating headers: {e}")
+        # Fallback: try to recreate header row
+        try:
+            sheet.insert_row(headers, 1)
+            print("✅ Headers inserted successfully")
+        except Exception as e2:
+            print(f"❌ Failed to insert headers: {e2}")
 
 def main():
     print("Starting Garmin comprehensive sync...")
@@ -397,7 +404,8 @@ def main():
         print(f"❌ Failed to connect to Google Sheets: {e}")
         return
     
-    # Update headers
+    # FORCE UPDATE HEADERS - always run this
+    print("\n📋 Updating sheet headers...")
     update_sheet_headers(sheet)
     
     # Get existing dates to avoid duplicates
@@ -414,9 +422,8 @@ def main():
         existing_dates = set()
     
     # Get recent activities (last 30 days)
-    print("Fetching activities from last 30 days...")
+    print("\n📊 Fetching activities from last 30 days...")
     try:
-        # Get activities for last 30 days
         end_date = datetime.now()
         start_date = end_date - timedelta(days=30)
         activities = garmin.get_activities_by_date(
@@ -436,12 +443,10 @@ def main():
     new_entries = 0
     for activity in activities:
         try:
-            # Parse activity date
             activity_date = activity.get('startTimeLocal', '')[:10]
             if not activity_date:
                 continue
             
-            # Get date in YYYY-MM-DD format
             date_obj = datetime.strptime(activity_date, "%Y-%m-%d")
             date_str = date_obj.strftime("%Y-%m-%d")
             
@@ -468,11 +473,7 @@ def main():
             
             # Get daily health metrics
             daily_metrics = get_daily_metrics(garmin, date_str)
-            
-            # Get sleep data
             sleep_metrics = get_sleep_data(garmin, date_str)
-            
-            # Get menstrual cycle data
             cycle_data = get_menstrual_cycle(garmin, date_str)
             
             # Prepare row with all data
@@ -488,7 +489,6 @@ def main():
                 avg_cadence,
                 elevation_gain,
                 activity_type,
-                # Daily metrics
                 daily_metrics['steps'],
                 daily_metrics['floors'],
                 daily_metrics['intensity_minutes'],
@@ -498,15 +498,12 @@ def main():
                 daily_metrics['hrv_status'],
                 daily_metrics['respiration'],
                 daily_metrics['spo2'],
-                # Sleep metrics
                 sleep_metrics['total_sleep_min'],
                 sleep_metrics['deep_sleep_min'],
                 sleep_metrics['light_sleep_min'],
                 sleep_metrics['rem_sleep_min'],
                 sleep_metrics['awake_min'],
-                # Fitness age
                 fitness_age,
-                # Menstrual cycle
                 cycle_data['phase'],
                 cycle_data['flow']
             ]
@@ -516,7 +513,6 @@ def main():
             print(f"✅ Added: {date_str} - {activity_name} ({distance_km} km)")
             new_entries += 1
             
-            # Add to existing dates to avoid processing same date again in this run
             existing_dates.add(date_str)
             
         except Exception as e:
