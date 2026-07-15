@@ -16,21 +16,21 @@ if os.path.exists('.env'):
     except ImportError:
         print("Warning: python-dotenv not installed. Install with: pip install python-dotenv")
 
-SYNC_DAYS = int(os.environ.get('SYNC_DAYS', 30))
+SYNC_DAYS = int(os.environ.get('SYNC_DAYS', 100))
 TOKEN_DIR = os.path.expanduser(os.environ.get('GARMIN_TOKEN_DIR', '~/.garth'))
 
 EXPECTED_HEADERS = [
-    "Date", "Activity ID", "Activity Name", "Distance (km)", "Duration (min)", "Avg Pace (min/km)",
-    "Avg HR", "Max HR", "Calories", "Avg Cadence", "Elevation Gain (m)", "Activity Type",
-    "Steps", "Floors", "Intensity Minutes", "Stress", "Body Battery Max", "Body Battery Min",
-    "HRV Avg", "HRV Status", "Respiration", "SpO2",
-    "Total Sleep (min)", "Deep Sleep (min)", "Light Sleep (min)", "REM Sleep (min)", "Awake (min)",
-    "Sleep Score", "Weight (kg)", "Body Fat (%)",
-    "Blood Pressure Systolic", "Blood Pressure Diastolic",
-    "Active Calories", "Resting Calories", "Resting HR",
-    "VO2 Max Running", "VO2 Max Cycling", "Training Status",
-    "Acute Training Load", "Chronic Training Load",
-    "Fitness Age", "Menstrual Phase", "Menstrual Flow",
+    "Дата", "ID активности", "Название активности", "Дистанция (км)", "Длительность (мин)", "Средний темп (мин/км)",
+    "Ср. ЧСС", "Макс. ЧСС", "Калории", "Ср. Каденс", "Набор высоты (м)", "Тип активности",
+    "Шаги", "Этажи", "Интенсивные минуты", "Стресс", "Body Battery Макс", "Body Battery Мин",
+    "HRV Ср.", "HRV Статус", "Дыхание", "SpO2",
+    "Сон Всего (мин)", "Сон Глубокий (мин)", "Сон Легкий (мин)", "Сон REM (мин)", "Бодрствование (мин)",
+    "Оценка сна", "Вес (кг)", "Жир (%)",
+    "Давление Систолическое", "Давление Диастолическое",
+    "Активные калории", "Калории покоя", "ЧСС покоя",
+    "VO2 Max Бег", "VO2 Max Вело", "Статус тренировки",
+    "Острая нагрузка", "Хроническая нагрузка",
+    "Фитнес-возраст", "Фаза цикла", "Выделения"
 ]
 
 
@@ -86,19 +86,19 @@ def ensure_headers(sheet):
         current_headers = sheet.row_values(1)
         if not current_headers:
             sheet.update('A1', [EXPECTED_HEADERS], value_input_option='RAW')
-            print("✅ Created sheet headers")
+            print("✅ Созданы заголовки таблицы")
             return
 
         missing = [header for header in EXPECTED_HEADERS if header not in current_headers]
         if missing:
             updated_headers = current_headers + missing
             sheet.update('A1', [updated_headers], value_input_option='RAW')
-            print(f"✅ Added missing headers: {', '.join(missing)}")
+            print(f"✅ Добавлены недостающие заголовки: {', '.join(missing)}")
         elif current_headers[:len(EXPECTED_HEADERS)] != EXPECTED_HEADERS:
             sheet.update('A1', [EXPECTED_HEADERS], value_input_option='RAW')
-            print("✅ Updated sheet headers")
+            print("✅ Заголовки таблицы обновлены")
     except Exception as exc:
-        print(f"Warning: Could not update headers: {exc}")
+        print(f"Предупреждение: не удалось обновить заголовки: {exc}")
 
 
 def get_fitness_age(garmin):
@@ -340,7 +340,7 @@ def build_activity_row(activity, daily_metrics):
 
 
 def main():
-    print(f"Starting Garmin sync (last {SYNC_DAYS} days)...")
+    print(f"Начинаем синхронизацию Garmin (последние {SYNC_DAYS} дней)...")
 
     garmin_email = os.environ.get('GARMIN_EMAIL')
     garmin_password = os.environ.get('GARMIN_PASSWORD')
@@ -348,49 +348,49 @@ def main():
     sheet_id = os.environ.get('SHEET_ID')
 
     if not google_creds_json and os.path.exists('credentials.json'):
-        print("Loading Google credentials from credentials.json...")
+        print("Загрузка Google credentials из credentials.json...")
         with open('credentials.json', 'r') as f:
             google_creds_json = f.read()
 
     if not all([garmin_email, garmin_password, google_creds_json, sheet_id]):
-        print("❌ Missing required environment variables")
+        print("❌ Отсутствуют необходимые переменные окружения")
         print(f"   GARMIN_EMAIL: {'✓' if garmin_email else '✗'}")
         print(f"   GARMIN_PASSWORD: {'✓' if garmin_password else '✗'}")
         print(f"   GOOGLE_CREDENTIALS: {'✓' if google_creds_json else '✗'}")
         print(f"   SHEET_ID: {'✓' if sheet_id else '✗'}")
         return
 
-    print("Connecting to Garmin...")
+    print("Подключение к Garmin...")
     try:
         garmin = connect_garmin(garmin_email, garmin_password)
-        print("✅ Connected to Garmin")
+        print("✅ Подключено к Garmin")
     except Exception as exc:
-        print(f"❌ Failed to connect to Garmin: {exc}")
-        print("If MFA is enabled, run login once locally — tokens will be saved to ~/.garth")
+        print(f"❌ Не удалось подключиться к Garmin: {exc}")
+        print("Если включена двухфакторная аутентификация, выполните вход локально один раз — токены будут сохранены в ~/.garth")
         return
 
     fitness_age = get_fitness_age(garmin)
     if fitness_age:
-        print(f"Fitness Age: {fitness_age}")
+        print(f"Фитнес-возраст: {fitness_age}")
 
     end_date = datetime.today()
     start_date = end_date - timedelta(days=SYNC_DAYS)
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = end_date.strftime('%Y-%m-%d')
 
-    print(f"Fetching activities from {start_str} to {end_str}...")
+    print(f"Получение активностей с {start_str} по {end_str}...")
     try:
         activities = garmin.get_activities_by_date(start_str, end_str) or []
-        print(f"Found {len(activities)} activities")
+        print(f"Найдено {len(activities)} активностей")
     except Exception as exc:
-        print(f"❌ Failed to fetch activities: {exc}")
+        print(f"❌ Не удалось получить активности: {exc}")
         return
 
     if not activities:
-        print("No activities found in the selected period")
+        print("Активностей за выбранный период не найдено")
         return
 
-    print("Connecting to Google Sheets...")
+    print("Подключение к Google Sheets...")
     try:
         creds_dict = json.loads(google_creds_json)
         creds = Credentials.from_service_account_info(
@@ -402,9 +402,9 @@ def main():
         )
         client = gspread.authorize(creds)
         sheet = client.open_by_key(sheet_id).sheet1
-        print("✅ Connected to Google Sheets")
+        print("✅ Подключено к Google Sheets")
     except Exception as exc:
-        print(f"❌ Failed to connect to Google Sheets: {exc}")
+        print(f"❌ Не удалось подключиться к Google Sheets: {exc}")
         return
 
     ensure_headers(sheet)
@@ -422,9 +422,9 @@ def main():
                     existing_keys.add((row[0], str(activity_id)))
                 else:
                     existing_keys.add((row[0], activity_name))
-        print(f"Found {len(existing_keys)} existing entries")
+        print(f"Найдено {len(existing_keys)} существующих записей")
     except Exception as exc:
-        print(f"Warning: Could not check existing data: {exc}")
+        print(f"Предупреждение: не удалось проверить существующие данные: {exc}")
 
     daily_cache = {}
     new_entries = 0
@@ -437,27 +437,43 @@ def main():
             row_key = (activity_date, activity_id) if activity_id else (activity_date, activity_name)
 
             if row_key in existing_keys:
-                print(f"Skipping {activity_date} - {activity_name} (already exists)")
+                print(f"Пропускаем {activity_date} - {activity_name} (уже существует)")
                 continue
 
             if activity_date not in daily_cache:
-                print(f"Fetching daily metrics for {activity_date}...")
+                print(f"Получение ежедневных метрик для {activity_date}...")
                 daily_cache[activity_date] = get_daily_metrics(garmin, activity_date, fitness_age)
 
             row = build_activity_row(activity, daily_cache[activity_date])
-            sheet.append_row(row, value_input_option='USER_ENTERED')
-            print(f"✅ Added: {activity_date} - {activity_name}")
+
+            # Находим правильную позицию для вставки (по дате)
+            all_data = sheet.get_all_values()
+            if len(all_data) > 1:
+                insert_position = len(all_data) + 1
+                new_date = row[0]
+
+                for i in range(1, len(all_data)):
+                    existing_date = all_data[i][0] if all_data[i] else ''
+                    if existing_date and new_date < existing_date:
+                        insert_position = i + 1
+                        break
+
+                sheet.insert_row(row, insert_position, value_input_option='USER_ENTERED')
+            else:
+                sheet.append_row(row, value_input_option='USER_ENTERED')
+
+            print(f"✅ Добавлено: {activity_date} - {activity_name}")
             new_entries += 1
             existing_keys.add(row_key)
 
         except Exception as exc:
-            print(f"❌ Error processing activity: {exc}")
+            print(f"❌ Ошибка при обработке активности: {exc}")
             continue
 
     if new_entries > 0:
-        print(f"\n🎉 Successfully added {new_entries} new activities!")
+        print(f"\n🎉 Успешно добавлено {new_entries} новых активностей!")
     else:
-        print("\n✓ No new activities to add")
+        print("\n✓ Новых активностей для добавления нет")
 
 
 if __name__ == "__main__":
