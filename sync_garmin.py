@@ -19,18 +19,20 @@ if os.path.exists('.env'):
 SYNC_DAYS = int(os.environ.get('SYNC_DAYS', 100))
 TOKEN_DIR = os.path.expanduser(os.environ.get('GARMIN_TOKEN_DIR', '~/.garth'))
 
-EXPECTED_HEADERS = [
-    "Дата", "ID активности", "Название активности", "Дистанция (км)", "Длительность (мин)", "Средний темп (мин/км)",
-    "Ср. ЧСС", "Макс. ЧСС", "Калории", "Ср. Каденс", "Набор высоты (м)", "Тип активности",
-    "Шаги", "Этажи", "Интенсивные минуты", "Стресс", "Body Battery Макс", "Body Battery Мин",
+# Заголовки для листа с тренировками (Лист 1)
+ACTIVITY_HEADERS = [
+    "Дата", "ID активности", "Название активности", "Дистанция (км)", 
+    "Длительность (мин)", "Средний темп (мин/км)", "Ср. ЧСС", 
+    "Макс. ЧСС", "Калории", "Ср. Каденс", "Набор высоты (м)", "Тип активности"
+]
+
+# Заголовки для листа с ежедневным состоянием (Лист 2)
+DAILY_HEADERS = [
+    "Дата", "Шаги", "Этажи", "Стресс", "Body Battery Макс", "Body Battery Мин",
     "HRV Ср.", "HRV Статус", "Дыхание", "SpO2",
-    "Сон Всего (мин)", "Сон Глубокий (мин)", "Сон Легкий (мин)", "Сон REM (мин)", "Бодрствование (мин)",
-    "Оценка сна", "Вес (кг)", "Жир (%)",
-    "Давление Систолическое", "Давление Диастолическое",
-    "Активные калории", "Калории покоя", "ЧСС покоя",
+    "Сон Всего (мин)", "Оценка сна", "ЧСС покоя",
     "VO2 Max Бег", "VO2 Max Вело", "Статус тренировки",
-    "Острая нагрузка", "Хроническая нагрузка",
-    "Фитнес-возраст", "Фаза цикла", "Выделения"
+    "Острая нагрузка", "Хроническая нагрузка", "Фитнес-возраст", "Фаза цикла"
 ]
 
 
@@ -81,24 +83,26 @@ def connect_garmin(email, password):
     return garmin
 
 
-def ensure_headers(sheet):
+def ensure_headers(sheet, headers):
+    """Проверяет и создает заголовки на листе"""
     try:
         current_headers = sheet.row_values(1)
         if not current_headers:
-            sheet.update('A1', [EXPECTED_HEADERS], value_input_option='RAW')
-            print("✅ Созданы заголовки таблицы")
+            sheet.update('A1', [headers], value_input_option='RAW')
+            print(f"✅ Созданы заголовки на листе {sheet.title}")
             return
 
-        missing = [header for header in EXPECTED_HEADERS if header not in current_headers]
-        if missing:
-            updated_headers = current_headers + missing
+        # Проверяем, нужно ли обновить заголовки
+        if len(current_headers) < len(headers):
+            # Добавляем недостающие
+            updated_headers = current_headers + headers[len(current_headers):]
             sheet.update('A1', [updated_headers], value_input_option='RAW')
-            print(f"✅ Добавлены недостающие заголовки: {', '.join(missing)}")
-        elif current_headers[:len(EXPECTED_HEADERS)] != EXPECTED_HEADERS:
-            sheet.update('A1', [EXPECTED_HEADERS], value_input_option='RAW')
-            print("✅ Заголовки таблицы обновлены")
+            print(f"✅ Обновлены заголовки на листе {sheet.title}")
+        elif current_headers[:len(headers)] != headers:
+            sheet.update('A1', [headers], value_input_option='RAW')
+            print(f"✅ Заголовки на листе {sheet.title} приведены к нужному формату")
     except Exception as exc:
-        print(f"Предупреждение: не удалось обновить заголовки: {exc}")
+        print(f"⚠️  Не удалось обновить заголовки на листе {sheet.title}: {exc}")
 
 
 def get_fitness_age(garmin):
@@ -110,25 +114,6 @@ def get_fitness_age(garmin):
 
     max_metrics = safe_call(garmin.get_max_metrics, today, default={}) or {}
     return max_metrics.get('fitnessAge', '') or ''
-
-
-def parse_blood_pressure(bp_data):
-    if not bp_data:
-        return '', ''
-
-    all_readings = []
-    for day_summary in bp_data.get('measurementSummaries', []):
-        all_readings.extend(day_summary.get('measurements', []))
-
-    if not all_readings:
-        return '', ''
-
-    sys_values = [reading['systolic'] for reading in all_readings if reading.get('systolic') is not None]
-    dia_values = [reading['diastolic'] for reading in all_readings if reading.get('diastolic') is not None]
-
-    systolic = round(sum(sys_values) / len(sys_values)) if sys_values else ''
-    diastolic = round(sum(dia_values) / len(dia_values)) if dia_values else ''
-    return systolic, diastolic
 
 
 def parse_training_status(training_status):
@@ -160,10 +145,10 @@ def parse_training_status(training_status):
 
 
 def get_daily_metrics(garmin, date_str, fitness_age):
+    """Получает все ежедневные метрики для указанной даты"""
     metrics = {
         'steps': 0,
         'floors': 0,
-        'intensity_minutes': 0,
         'stress': 0,
         'body_battery_max': 0,
         'body_battery_min': 0,
@@ -172,17 +157,7 @@ def get_daily_metrics(garmin, date_str, fitness_age):
         'respiration': 0,
         'spo2': 0,
         'total_sleep_min': 0,
-        'deep_sleep_min': 0,
-        'light_sleep_min': 0,
-        'rem_sleep_min': 0,
-        'awake_min': 0,
         'sleep_score': '',
-        'weight': '',
-        'body_fat': '',
-        'bp_systolic': '',
-        'bp_diastolic': '',
-        'active_calories': 0,
-        'resting_calories': 0,
         'resting_hr': 0,
         'vo2max_running': '',
         'vo2max_cycling': '',
@@ -190,44 +165,25 @@ def get_daily_metrics(garmin, date_str, fitness_age):
         'acute_training_load': '',
         'chronic_training_load': '',
         'menstrual_phase': '',
-        'menstrual_flow': '',
         'fitness_age': fitness_age,
     }
 
     summary = safe_call(garmin.get_user_summary, date_str, default={}) or {}
-    stats_body = safe_call(garmin.get_stats_and_body, date_str, default={}) or {}
     sleep_data = safe_call(garmin.get_sleep_data, date_str, default={}) or {}
     training_status = safe_call(garmin.get_training_status, date_str, default={}) or {}
     hrv_payload = safe_call(garmin.get_hrv_data, date_str, default={}) or {}
-    bp_data = safe_call(garmin.get_blood_pressure, date_str, date_str, default={}) or {}
 
     metrics['steps'] = summary.get('totalSteps') or 0
     metrics['floors'] = summary.get('floorsAscended') or 0
-    metrics['intensity_minutes'] = (
-        (summary.get('moderateIntensityMinutes') or 0)
-        + 2 * (summary.get('vigorousIntensityMinutes') or 0)
-    )
     metrics['stress'] = summary.get('averageStressLevel') or 0
     metrics['body_battery_max'] = summary.get('bodyBatteryHighestValue') or 0
     metrics['body_battery_min'] = summary.get('bodyBatteryLowestValue') or 0
-    metrics['active_calories'] = summary.get('activeKilocalories') or 0
-    metrics['resting_calories'] = summary.get('bmrKilocalories') or 0
     metrics['resting_hr'] = summary.get('restingHeartRate') or 0
-
-    if stats_body.get('weight'):
-        metrics['weight'] = round(stats_body['weight'] / 1000, 2)
-    metrics['body_fat'] = stats_body.get('bodyFat') or ''
-
-    metrics['bp_systolic'], metrics['bp_diastolic'] = parse_blood_pressure(bp_data)
 
     sleep_dto = sleep_data.get('dailySleepDTO', {}) if isinstance(sleep_data, dict) else {}
     sleep_scores = sleep_dto.get('sleepScores') or {}
     metrics['sleep_score'] = sleep_scores.get('overall', {}).get('value', '') or ''
     metrics['total_sleep_min'] = seconds_to_minutes(sleep_dto.get('sleepTimeSeconds', 0))
-    metrics['deep_sleep_min'] = seconds_to_minutes(sleep_dto.get('deepSleepSeconds', 0))
-    metrics['light_sleep_min'] = seconds_to_minutes(sleep_dto.get('lightSleepSeconds', 0))
-    metrics['rem_sleep_min'] = seconds_to_minutes(sleep_dto.get('remSleepSeconds', 0))
-    metrics['awake_min'] = seconds_to_minutes(sleep_dto.get('awakeSleepSeconds', 0))
 
     hrv_summary = (hrv_payload or {}).get('hrvSummary') or {}
     metrics['hrv_avg'] = hrv_summary.get('lastNightAvg') or 0
@@ -264,12 +220,6 @@ def get_daily_metrics(garmin, date_str, fitness_age):
         or menstrual.get('phaseType')
         or ''
     )
-    metrics['menstrual_flow'] = (
-        menstrual.get('flowLevel')
-        or menstrual.get('flow')
-        or menstrual.get('flowType')
-        or ''
-    )
 
     return metrics
 
@@ -283,7 +233,8 @@ def get_avg_cadence(activity):
     ) or 0
 
 
-def build_activity_row(activity, daily_metrics):
+def build_activity_row(activity):
+    """Создает строку для листа с тренировками"""
     activity_date = activity.get('startTimeLocal', '')[:10]
     activity_name = activity.get('activityName', 'Activity')
     activity_id = activity.get('activityId', '')
@@ -305,38 +256,77 @@ def build_activity_row(activity, daily_metrics):
         get_avg_cadence(activity),
         round(activity.get('elevationGain', 0), 1) if activity.get('elevationGain') else 0,
         activity_type,
-        daily_metrics['steps'],
-        daily_metrics['floors'],
-        daily_metrics['intensity_minutes'],
-        daily_metrics['stress'],
-        daily_metrics['body_battery_max'],
-        daily_metrics['body_battery_min'],
-        daily_metrics['hrv_avg'],
-        daily_metrics['hrv_status'],
-        daily_metrics['respiration'],
-        daily_metrics['spo2'],
-        daily_metrics['total_sleep_min'],
-        daily_metrics['deep_sleep_min'],
-        daily_metrics['light_sleep_min'],
-        daily_metrics['rem_sleep_min'],
-        daily_metrics['awake_min'],
-        daily_metrics['sleep_score'],
-        daily_metrics['weight'],
-        daily_metrics['body_fat'],
-        daily_metrics['bp_systolic'],
-        daily_metrics['bp_diastolic'],
-        daily_metrics['active_calories'],
-        daily_metrics['resting_calories'],
-        daily_metrics['resting_hr'],
-        daily_metrics['vo2max_running'],
-        daily_metrics['vo2max_cycling'],
-        daily_metrics['training_status'],
-        daily_metrics['acute_training_load'],
-        daily_metrics['chronic_training_load'],
-        daily_metrics['fitness_age'],
-        daily_metrics['menstrual_phase'],
-        daily_metrics['menstrual_flow'],
     ]
+
+
+def build_daily_row(date_str, metrics):
+    """Создает строку для листа с ежедневным состоянием"""
+    return [
+        date_str,
+        metrics['steps'],
+        metrics['floors'],
+        metrics['stress'],
+        metrics['body_battery_max'],
+        metrics['body_battery_min'],
+        metrics['hrv_avg'],
+        metrics['hrv_status'],
+        metrics['respiration'],
+        metrics['spo2'],
+        metrics['total_sleep_min'],
+        metrics['sleep_score'],
+        metrics['resting_hr'],
+        metrics['vo2max_running'],
+        metrics['vo2max_cycling'],
+        metrics['training_status'],
+        metrics['acute_training_load'],
+        metrics['chronic_training_load'],
+        metrics['fitness_age'],
+        metrics['menstrual_phase'],
+    ]
+
+
+def get_existing_keys(sheet, key_column=1):
+    """Получает существующие ключи (даты или ID) из листа"""
+    existing_keys = set()
+    try:
+        all_data = sheet.get_all_values()
+        if len(all_data) > 1:
+            for row in all_data[1:]:
+                if row and row[0]:
+                    if key_column == 1:
+                        existing_keys.add(row[0])  # Только дата
+                    else:
+                        # Для активностей используем комбинацию даты и ID
+                        if len(row) > 1:
+                            existing_keys.add((row[0], row[1]))
+                        else:
+                            existing_keys.add(row[0])
+        print(f"Найдено {len(existing_keys)} существующих записей на листе {sheet.title}")
+    except Exception as exc:
+        print(f"⚠️  Не удалось проверить существующие данные на листе {sheet.title}: {exc}")
+    return existing_keys
+
+
+def insert_row_sorted(sheet, row, date_column=0):
+    """Вставляет строку с сортировкой по дате (возрастание)"""
+    all_data = sheet.get_all_values()
+    
+    if len(all_data) <= 1:
+        # Если данных нет, просто добавляем
+        sheet.append_row(row, value_input_option='USER_ENTERED')
+        return
+    
+    new_date = row[date_column]
+    insert_position = len(all_data) + 1
+    
+    # Ищем позицию для вставки (по возрастанию даты)
+    for i in range(1, len(all_data)):
+        existing_date = all_data[i][date_column] if all_data[i] and len(all_data[i]) > date_column else ''
+        if existing_date and new_date < existing_date:
+            insert_position = i + 1
+            break
+    
+    sheet.insert_row(row, insert_position, value_input_option='USER_ENTERED')
 
 
 def main():
@@ -366,7 +356,6 @@ def main():
         print("✅ Подключено к Garmin")
     except Exception as exc:
         print(f"❌ Не удалось подключиться к Garmin: {exc}")
-        print("Если включена двухфакторная аутентификация, выполните вход локально один раз — токены будут сохранены в ~/.garth")
         return
 
     fitness_age = get_fitness_age(garmin)
@@ -386,10 +375,6 @@ def main():
         print(f"❌ Не удалось получить активности: {exc}")
         return
 
-    if not activities:
-        print("Активностей за выбранный период не найдено")
-        return
-
     print("Подключение к Google Sheets...")
     try:
         creds_dict = json.loads(google_creds_json)
@@ -401,79 +386,89 @@ def main():
             ],
         )
         client = gspread.authorize(creds)
-        sheet = client.open_by_key(sheet_id).sheet1
+        spreadsheet = client.open_by_key(sheet_id)
+        
+        # Получаем или создаем листы
+        try:
+            activity_sheet = spreadsheet.worksheet("Лист1")
+        except gspread.WorksheetNotFound:
+            activity_sheet = spreadsheet.add_worksheet(title="Лист1", rows=100, cols=20)
+            print("✅ Создан лист 'Лист1' для тренировок")
+        
+        try:
+            daily_sheet = spreadsheet.worksheet("Лист2")
+        except gspread.WorksheetNotFound:
+            daily_sheet = spreadsheet.add_worksheet(title="Лист2", rows=100, cols=20)
+            print("✅ Создан лист 'Лист2' для ежедневного состояния")
+        
         print("✅ Подключено к Google Sheets")
     except Exception as exc:
         print(f"❌ Не удалось подключиться к Google Sheets: {exc}")
         return
 
-    ensure_headers(sheet)
+    # Настраиваем заголовки на обоих листах
+    ensure_headers(activity_sheet, ACTIVITY_HEADERS)
+    ensure_headers(daily_sheet, DAILY_HEADERS)
 
-    existing_keys = set()
-    try:
-        existing_data = sheet.get_all_values()
-        if len(existing_data) > 1:
-            for row in existing_data[1:]:
-                if not row or not row[0]:
-                    continue
-                activity_id = row[1] if len(row) > 1 else ''
-                activity_name = row[2] if len(row) > 2 else (row[1] if len(row) > 1 else '')
-                if activity_id:
-                    existing_keys.add((row[0], str(activity_id)))
-                else:
-                    existing_keys.add((row[0], activity_name))
-        print(f"Найдено {len(existing_keys)} существующих записей")
-    except Exception as exc:
-        print(f"Предупреждение: не удалось проверить существующие данные: {exc}")
+    # Получаем существующие записи для проверки дубликатов
+    existing_activities = get_existing_keys(activity_sheet, key_column=2)  # по ID
+    existing_daily = get_existing_keys(daily_sheet, key_column=1)  # только даты
 
     daily_cache = {}
-    new_entries = 0
+    new_activities = 0
+    new_daily = 0
 
     for activity in activities:
         try:
             activity_date = activity.get('startTimeLocal', '')[:10]
             activity_name = activity.get('activityName', 'Activity')
             activity_id = str(activity.get('activityId', ''))
-            row_key = (activity_date, activity_id) if activity_id else (activity_date, activity_name)
-
-            if row_key in existing_keys:
-                print(f"Пропускаем {activity_date} - {activity_name} (уже существует)")
+            
+            # Проверяем, есть ли уже такая активность
+            activity_key = (activity_date, activity_id) if activity_id else (activity_date, activity_name)
+            if activity_key in existing_activities:
+                print(f"⏭️  Пропускаем активность {activity_date} - {activity_name} (уже существует)")
                 continue
-
+            
+            # Получаем ежедневные метрики (если еще не получены)
             if activity_date not in daily_cache:
-                print(f"Получение ежедневных метрик для {activity_date}...")
+                print(f"📊 Получение ежедневных метрик для {activity_date}...")
                 daily_cache[activity_date] = get_daily_metrics(garmin, activity_date, fitness_age)
-
-            row = build_activity_row(activity, daily_cache[activity_date])
-
-            # Находим правильную позицию для вставки (по дате)
-            all_data = sheet.get_all_values()
-            if len(all_data) > 1:
-                insert_position = len(all_data) + 1
-                new_date = row[0]
-
-                for i in range(1, len(all_data)):
-                    existing_date = all_data[i][0] if all_data[i] else ''
-                    if existing_date and new_date < existing_date:
-                        insert_position = i + 1
-                        break
-
-                sheet.insert_row(row, insert_position, value_input_option='USER_ENTERED')
-            else:
-                sheet.append_row(row, value_input_option='USER_ENTERED')
-
-            print(f"✅ Добавлено: {activity_date} - {activity_name}")
-            new_entries += 1
-            existing_keys.add(row_key)
-
+            
+            metrics = daily_cache[activity_date]
+            
+            # Добавляем активность на Лист1
+            activity_row = build_activity_row(activity)
+            insert_row_sorted(activity_sheet, activity_row)
+            existing_activities.add(activity_key)
+            new_activities += 1
+            print(f"✅ Добавлена активность: {activity_date} - {activity_name}")
+            
+            # Проверяем, есть ли уже ежедневные данные за эту дату
+            if activity_date not in existing_daily:
+                # Добавляем ежедневные метрики на Лист2
+                daily_row = build_daily_row(activity_date, metrics)
+                insert_row_sorted(daily_sheet, daily_row)
+                existing_daily.add(activity_date)
+                new_daily += 1
+                print(f"✅ Добавлены ежедневные метрики: {activity_date}")
+            
         except Exception as exc:
             print(f"❌ Ошибка при обработке активности: {exc}")
             continue
 
-    if new_entries > 0:
-        print(f"\n🎉 Успешно добавлено {new_entries} новых активностей!")
+    # Выводим итоги
+    print("\n" + "="*50)
+    if new_activities > 0:
+        print(f"🎉 Добавлено {new_activities} новых тренировок на Лист1")
     else:
-        print("\n✓ Новых активностей для добавления нет")
+        print("📭 Новых тренировок для добавления нет")
+    
+    if new_daily > 0:
+        print(f"🎉 Добавлено {new_daily} новых записей состояния на Лист2")
+    else:
+        print("📭 Новых записей состояния для добавления нет")
+    print("="*50)
 
 
 if __name__ == "__main__":
