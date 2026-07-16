@@ -134,7 +134,6 @@ def connect_garmin(email, password):
     # Пытаемся сохранить токены (если есть метод)
     try:
         os.makedirs(TOKEN_DIR, exist_ok=True)
-        # В некоторых версиях библиотеки используется garth
         if hasattr(garmin, 'garth') and hasattr(garmin.garth, 'dump'):
             garmin.garth.dump(TOKEN_DIR)
             logger.info("Tokens saved to %s", TOKEN_DIR)
@@ -233,8 +232,8 @@ def build_daily_row(
     # 2. Стресс
     stress = safe_call(garmin.get_stress_data, date, default={})
     
-    # 3. Body Battery
-    battery = safe_call(garmin.get_body_battery_data, date, date, default=[])
+    # 3. Body Battery - исправлено название метода!
+    battery = safe_call(garmin.get_body_battery, date, date, default=[])
     
     # 4. HRV
     hrv = safe_call(garmin.get_hrv_data, date, default={})
@@ -261,11 +260,16 @@ def build_daily_row(
     # Стресс
     stress_level = get_value(stress, "stressLevel", 0) or 0
     
-    # Body Battery
+    # Body Battery - правильная обработка данных
     battery_max = 0
     battery_min = 0
     if battery and isinstance(battery, list) and len(battery) > 0:
-        values = [get_value(b, "value", 0) for b in battery if get_value(b, "value", 0)]
+        # В get_body_battery может возвращаться список объектов с полем 'value'
+        values = []
+        for b in battery:
+            val = get_value(b, "value", 0)
+            if val:
+                values.append(val)
         if values:
             battery_max = max(values)
             battery_min = min(values)
