@@ -227,7 +227,7 @@ def build_daily_row(
         date
 ):
     # Получаем данные через правильные API методы
-    # 1. Данные за день из user_summary (шаги, этажи, ЧСС покоя)
+    # 1. Данные за день из user_summary (шаги, этажи, ЧСС покоя, дыхание)
     summary = safe_call(garmin.get_user_summary, date, default={})
     
     # 2. Стресс
@@ -247,15 +247,18 @@ def build_daily_row(
     
     # 7. VO2 Max
     vo2 = safe_call(garmin.get_max_metrics, date, default={})
+
+    # Извлекаем значения из summary
+    steps = get_value(summary, "totalSteps", 0) or 0
+    floors = get_value(summary, "floorsAscended", 0) or 0
+    resting_hr = get_value(summary, "restingHeartRate", 0) or 0
     
-    # 8. Дыхание (Respiration) - получаем из user_summary
+    # Дыхание - из summary
     respiration_value = get_value(summary, "averageWakingRespirationValue", 0) or 0
     if not respiration_value:
         respiration_value = get_value(summary, "averageSleepRespirationValue", 0) or 0
-
-    # Извлекаем значения
-    steps = get_value(summary, "totalSteps", 0) or 0
-    floors = get_value(summary, "floorsAscended", 0) or 0
+    
+    # Стресс
     stress_level = get_value(stress, "stressLevel", 0) or 0
     
     # Body Battery
@@ -291,9 +294,6 @@ def build_daily_row(
     # VO2 Max
     vo2_running = get_value(vo2, "vo2MaxValue", 0) or 0
     vo2_cycling = get_value(vo2, "vo2MaxCyclingValue", 0) or 0
-    
-    # ЧСС покоя
-    resting_hr = get_value(summary, "restingHeartRate", 0) or 0
 
     return [
         date,
