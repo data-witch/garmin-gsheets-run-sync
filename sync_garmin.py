@@ -119,6 +119,7 @@ def get_value(data, key, default=""):
 def connect_garmin(email, password):
     garmin = Garmin(email, password)
 
+    # Пробуем использовать сохраненные токены
     if os.path.exists(TOKEN_DIR):
         try:
             garmin.login(tokenstore=TOKEN_DIR)
@@ -127,11 +128,19 @@ def connect_garmin(email, password):
         except Exception:
             logger.info("Token expired")
 
+    # Если токенов нет или они истекли — полный логин
     garmin.login()
 
+    # Пытаемся сохранить токены (если есть метод)
     try:
         os.makedirs(TOKEN_DIR, exist_ok=True)
-        garmin.garth.dump(TOKEN_DIR)
+        # В некоторых версиях библиотеки используется garth
+        if hasattr(garmin, 'garth') and hasattr(garmin.garth, 'dump'):
+            garmin.garth.dump(TOKEN_DIR)
+            logger.info("Tokens saved to %s", TOKEN_DIR)
+        elif hasattr(garmin, 'dump_tokens'):
+            garmin.dump_tokens(TOKEN_DIR)
+            logger.info("Tokens saved to %s", TOKEN_DIR)
     except Exception as e:
         logger.warning("Token save error: %s", e)
 
@@ -200,16 +209,16 @@ def build_activity_row(
         get_value(activity, "averageHR", 0),
         get_value(activity, "maxHR", 0),
         get_value(activity, "calories", 0),
-        cadence,  # Исправленный каденс
+        cadence,
         get_value(activity, "elevationGain", 0),
         get_value(activity.get("activityType", {}), "typeKey"),
         get_value(summary, "aerobicTrainingEffect"),
         get_value(summary, "anaerobicTrainingEffect"),
         round(get_value(summary, "recoveryTime", 0) / 60, 1),
         get_value(training_status, "trainingStatus"),
-        ground_contact_time,      # Новое поле
-        vertical_oscillation,     # Новое поле
-        stride_length            # Новое поле
+        ground_contact_time,
+        vertical_oscillation,
+        stride_length
     ]
 
 
@@ -218,67 +227,50 @@ def build_daily_row(
         date
 ):
     # Получаем данные через правильные API методы
-    # 1. Wellness данные (шаги, этажи)
-    wellness = safe_call(garmin.get_wellness_data, date, default={})
+    # 1. Данные за день из user_summary (шаги, этажи, ЧСС покоя)
+    summary = safe_call(garmin.get_user_summary, date, default={})
     
     # 2. Стресс
     stress = safe_call(garmin.get_stress_data, date, default={})
     
-    # 3. Body Battery через специализированный метод
+    # 3. Body Battery
     battery = safe_call(garmin.get_body_battery_data, date, date, default=[])
     
     # 4. HRV
     hrv = safe_call(garmin.get_hrv_data, date, default={})
     
-    # 5. Дыхание (Respiration)
-    respiration = safe_call(garmin.get_respiration_data, date, default={})
-    
-    # 6. SpO2
+    # 5. SpO2
     spo2 = safe_call(garmin.get_spo2_data, date, default={})
     
-    # 7. Сон
+    # 6. Сон
     sleep = safe_call(garmin.get_sleep_data, date, default={})
     
-    # 8. VO2 Max
+    # 7. VO2 Max
     vo2 = safe_call(garmin.get_max_metrics, date, default={})
     
-    # 9. ЧСС покоя из summary
-    summary = safe_call(garmin.get_user_summary, date, default={})
+    # 8. Дыхание (Respiration) - получаем из user_summary
+    respiration_value = get_value(summary, "averageWakingRespirationValue", 0) or 0
+    if not respiration_value:
+        respiration_value = get_value(summary, "averageSleepRespirationValue", 0) or 0
 
     # Извлекаем значения
-    # Шаги и этажи
-    steps = get_value(wellness, "totalSteps", 0) or 0
-    floors = get_value(wellness, "floorsAscended", 0) or 0
-    
-    # Стресс
+    steps = get_value(summary, "totalSteps", 0) or 0
+    floors = get_value(summary, "floorsAscended", 0) or 0
     stress_level = get_value(stress, "stressLevel", 0) or 0
     
     # Body Battery
     battery_max = 0
     battery_min = 0
     if battery and isinstance(battery, list) and len(battery) > 0:
-        battery_max = get_value(battery[0], "value", 0) or 0
-        # Если есть несколько записей за день, ищем максимум и минимум
-        if len(battery) > 1:
-            values = [get_value(b, "value", 0) for b in battery if get_value(b, "value", 0)]
-            if values:
-                battery_max = max(values)
-                battery_min = min(values)
-        else:
-            battery_min = battery_max
+        values = [get_value(b, "value", 0) for b in battery if get_value(b, "value", 0)]
+        if values:
+            battery_max = max(values)
+            battery_min = min(values)
     
     # HRV
     hrv_summary = hrv.get("hrvSummary", {})
     hrv_avg = get_value(hrv_summary, "lastNightAvg", 0) or 0
     hrv_status = get_value(hrv_summary, "status", "") or ""
-    
-    # Дыхание
-    respiration_value = (
-        get_value(respiration, "avgWakingRespirationValue", 0) or
-        get_value(respiration, "avgSleepRespirationValue", 0) or
-        get_value(respiration, "averageRespirationRate", 0) or
-        0
-    )
     
     # SpO2
     spo2_value = (
@@ -290,13 +282,11 @@ def build_daily_row(
     # Сон
     sleep_dto = sleep.get("dailySleepDTO", {})
     sleep_time = get_value(sleep_dto, "sleepTimeSeconds", 0) or 0
-    sleep_score = (
-        get_value(
-            sleep_dto.get("sleepScores", {}).get("overall", {}),
-            "value",
-            0
-        ) or 0
-    )
+    sleep_score = get_value(
+        sleep_dto.get("sleepScores", {}).get("overall", {}),
+        "value",
+        0
+    ) or 0
     
     # VO2 Max
     vo2_running = get_value(vo2, "vo2MaxValue", 0) or 0
@@ -349,13 +339,13 @@ def main():
     activities_sheet = spreadsheet.worksheet("Activities")
     daily_sheet = spreadsheet.worksheet("Daily")
 
-    # Обновляем заголовки
+    # Обновляем заголовки (исправленный синтаксис)
     if activities_sheet.row_values(1) != ACTIVITY_HEADERS:
-        activities_sheet.update("A1", [ACTIVITY_HEADERS])
+        activities_sheet.update(range_name="A1", values=[ACTIVITY_HEADERS])
         logger.info("Updated Activities headers")
 
     if daily_sheet.row_values(1) != DAILY_HEADERS:
-        daily_sheet.update("A1", [DAILY_HEADERS])
+        daily_sheet.update(range_name="A1", values=[DAILY_HEADERS])
         logger.info("Updated Daily headers")
 
     existing_activity_ids = get_existing_values(activities_sheet, 1)
@@ -363,12 +353,18 @@ def main():
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=SYNC_DAYS)
+    
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
 
-    training_status = safe_call(garmin.get_training_status, default={})
+    # Получаем статус тренировки за последнюю дату (нужна дата)
+    training_status = safe_call(garmin.get_training_status, end_str, default={})
 
-    activities = garmin.get_activities_by_date(
-        start.strftime("%Y-%m-%d"),
-        end.strftime("%Y-%m-%d")
+    activities = safe_call(
+        garmin.get_activities_by_date,
+        start_str,
+        end_str,
+        default=[]
     )
 
     activity_rows = []
