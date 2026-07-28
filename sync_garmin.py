@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-SYNC_DAYS = int(os.getenv("SYNC_DAYS", "30"))
+SYNC_DAYS = int(os.getenv("SYNC_DAYS", "210"))
 SYNC_TIMEZONE = os.getenv("SYNC_TIMEZONE", "Asia/Novosibirsk")
 
 TOKEN_DIR = os.path.expanduser(
