@@ -45,25 +45,44 @@ TOKEN_DIR = os.path.expanduser(
 
 
 ACTIVITY_HEADERS = [
+    "Тип активности",
     "Дата",
-    "ID активности",
-    "Название активности",
+    "Избранное",
+    "Название",
     "Дистанция (км)",
-    "Длительность (мин)",
-    "Средний темп (мин/км)",
+    "Калории",
+    "Время (мин)",
     "Ср. ЧСС",
     "Макс. ЧСС",
-    "Калории",
-    "Ср. Каденс",
+    "Аэробный TE",
+    "Ср. каденс",
+    "Макс. каденс",
+    "Ср. темп (мин/км)",
+    "Лучший темп (мин/км)",
     "Набор высоты (м)",
-    "Тип активности",
-    "Training Effect аэробный",
-    "Training Effect анаэробный",
-    "Время восстановления (ч)",
-    "Статус тренировки",
+    "Снижение (м)",
+    "Ср. длина шага (см)",
+    "Ср. верт. соотношение (%)",
+    "Ср. верт. осцилляция (см)",
+    "Training Load",
+    "ID активности",
+    "Локация",
+    "Время в движении (мин)",
+    "Затраченное время (мин)",
+    "Анаэробный TE",
+    "Метка TE",
     "Время контакта с землей (мс)",
-    "Вертикальная осцилляция (см)",
-    "Длина шага (см)"
+    "Шаги",
+    "Ср. мощность (Вт)",
+    "Макс. мощность (Вт)",
+    "Норм. мощность (Вт)",
+    "Body Battery Δ",
+    "Умеренные мин",
+    "Интенсивные мин",
+    "Кругов",
+    "Мин. высота (м)",
+    "Макс. высота (м)",
+    "Устройство",
 ]
 
 
@@ -143,63 +162,148 @@ def seconds_to_minutes(value):
     return round(value / 60, 1)
 
 
-def get_existing_values(sheet, column):
+def speed_to_pace_min_per_km(speed_mps):
+    """Convert speed (m/s) to pace (min/km)."""
+    if not speed_mps or speed_mps <= 0:
+        return ""
+    return round(1000 / (speed_mps * 60), 2)
+
+
+def round_value(value, digits=2):
+    if value is None or value == "":
+        return ""
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return value
+
+
+def get_device_map(garmin):
+    devices = safe_call(garmin.get_devices, default=[]) or []
+    device_map = {}
+    for device in devices:
+        device_id = str(get_value(device, "deviceId"))
+        device_map[device_id] = get_value(device, "displayName") or get_value(device, "productDisplayName")
+    return device_map
+
+
+def ensure_sheet_headers(sheet, expected_headers):
+    current_headers = sheet.row_values(1)
+    if not current_headers:
+        sheet.update(range_name="A1", values=[expected_headers])
+        logger.info("Created headers")
+        return
+
+    missing = [header for header in expected_headers if header not in current_headers]
+    if missing:
+        sheet.update(range_name="A1", values=[current_headers + missing])
+        logger.info("Added missing headers: %s", ", ".join(missing))
+    elif current_headers[:len(expected_headers)] != expected_headers:
+        sheet.update(range_name="A1", values=[expected_headers])
+        logger.info("Updated headers")
+
+
+def get_existing_activity_keys(sheet, activity_id_column):
     rows = sheet.get_all_values()
-    return {
-        row[column]
-        for row in rows[1:]
-        if len(row) > column and row[column]
-    }
+    existing_ids = set()
+    existing_name_keys = set()
+
+    name_column = ACTIVITY_HEADERS.index("Название")
+    date_column = ACTIVITY_HEADERS.index("Дата")
+
+    for row in rows[1:]:
+        if len(row) <= date_column or not row[date_column]:
+            continue
+
+        if len(row) > activity_id_column and row[activity_id_column]:
+            existing_ids.add(str(row[activity_id_column]))
+        elif len(row) > name_column and row[name_column]:
+            existing_name_keys.add((row[date_column], row[name_column]))
+
+    return existing_ids, existing_name_keys
 
 
-def build_activity_row(garmin, activity, training_status):
-    details = safe_call(
-        garmin.get_activity_details,
-        activity.get("activityId"),
-        default={}
+def is_activity_existing(activity, existing_ids, existing_name_keys):
+    activity_id = str(activity.get("activityId", ""))
+    activity_date = get_value(activity, "startTimeLocal")[:10]
+    activity_name = get_value(activity, "activityName")
+
+    if activity_id and activity_id in existing_ids:
+        return True
+    return (activity_date, activity_name) in existing_name_keys
+
+
+def build_activity_row(activity, device_map):
+    """Build one Activities row from Garmin activity list payload."""
+    activity_type = get_value(activity.get("activityType", {}), "typeKey")
+    start_time_local = get_value(activity, "startTimeLocal")
+    activity_date = start_time_local[:10] if start_time_local else ""
+    distance = float(get_value(activity, "distance", 0) or 0)
+    duration = float(get_value(activity, "duration", 0) or 0)
+    moving_duration = float(get_value(activity, "movingDuration", 0) or 0)
+    elapsed_duration = float(get_value(activity, "elapsedDuration", 0) or 0)
+
+    avg_pace = speed_to_pace_min_per_km(get_value(activity, "averageSpeed", 0))
+    if not avg_pace and distance:
+        avg_pace = round_value((duration / (distance / 1000)) / 60)
+
+    best_pace = speed_to_pace_min_per_km(get_value(activity, "maxSpeed", 0))
+
+    avg_cadence = (
+        get_value(activity, "averageRunningCadenceInStepsPerMinute")
+        or get_value(activity, "averageBikingCadenceInRevPerMinute")
+        or get_value(activity, "averageCadence")
+        or ""
+    )
+    max_cadence = (
+        get_value(activity, "maxRunningCadenceInStepsPerMinute")
+        or get_value(activity, "maxBikingCadenceInRevPerMinute")
+        or get_value(activity, "maxCadence")
+        or ""
     )
 
-    summary = {}
-    if details:
-        summary = details.get("summaryDTO", {})
-
-    distance = get_value(activity, "distance", 0)
-    duration = get_value(activity, "duration", 0)
-
-    pace = 0
-    if distance:
-        pace = round((duration / (distance / 1000)) / 60, 2)
-
-    cadence = (
-        get_value(activity, "averageRunningCadenceInStepsPerMinute", 0) or
-        get_value(activity, "averageCadence", 0) or
-        0
-    )
-
-    ground_contact_time = get_value(activity, "avgGroundContactTime", 0) or 0
-    vertical_oscillation = get_value(activity, "avgVerticalOscillation", 0) or 0
-    stride_length = get_value(activity, "avgStrideLength", 0) or 0
+    device_id = str(get_value(activity, "deviceId"))
+    device_name = device_map.get(device_id, "")
 
     return [
-        get_value(activity, "startTimeLocal")[:10],
-        str(get_value(activity, "activityId")),
+        activity_type,
+        activity_date,
+        "Да" if activity.get("favorite") else "Нет",
         get_value(activity, "activityName"),
-        round(distance / 1000, 2),
-        round(duration / 60, 2),
-        pace,
-        get_value(activity, "averageHR", 0),
-        get_value(activity, "maxHR", 0),
-        get_value(activity, "calories", 0),
-        cadence,
-        get_value(activity, "elevationGain", 0),
-        get_value(activity.get("activityType", {}), "typeKey"),
-        get_value(summary, "aerobicTrainingEffect"),
-        get_value(summary, "anaerobicTrainingEffect"),
-        round(get_value(summary, "recoveryTime", 0) / 60, 1),
-        get_value(training_status, "trainingStatus"),
-        ground_contact_time,
-        vertical_oscillation,
-        stride_length
+        round_value(distance / 1000) if distance else 0,
+        round_value(get_value(activity, "calories", 0), 0),
+        round_value(duration / 60),
+        round_value(get_value(activity, "averageHR", 0), 0),
+        round_value(get_value(activity, "maxHR", 0), 0),
+        round_value(get_value(activity, "aerobicTrainingEffect")),
+        round_value(avg_cadence, 1),
+        round_value(max_cadence, 0),
+        avg_pace,
+        best_pace,
+        round_value(get_value(activity, "elevationGain", 0), 1),
+        round_value(get_value(activity, "elevationLoss", 0), 1),
+        round_value(get_value(activity, "avgStrideLength", 0), 1),
+        round_value(get_value(activity, "avgVerticalRatio", 0), 1),
+        round_value(get_value(activity, "avgVerticalOscillation", 0), 1),
+        round_value(get_value(activity, "activityTrainingLoad", 0), 1),
+        str(get_value(activity, "activityId")),
+        get_value(activity, "locationName"),
+        round_value(moving_duration / 60) if moving_duration else "",
+        round_value(elapsed_duration / 60) if elapsed_duration else "",
+        round_value(get_value(activity, "anaerobicTrainingEffect")),
+        get_value(activity, "trainingEffectLabel"),
+        round_value(get_value(activity, "avgGroundContactTime", 0), 1),
+        round_value(get_value(activity, "steps", 0), 0),
+        round_value(get_value(activity, "avgPower", 0), 0),
+        round_value(get_value(activity, "maxPower", 0), 0),
+        round_value(get_value(activity, "normPower", 0), 0),
+        round_value(get_value(activity, "differenceBodyBattery", 0), 0),
+        round_value(get_value(activity, "moderateIntensityMinutes", 0), 0),
+        round_value(get_value(activity, "vigorousIntensityMinutes", 0), 0),
+        round_value(get_value(activity, "lapCount", 0), 0),
+        round_value(get_value(activity, "minElevation", 0), 0),
+        round_value(get_value(activity, "maxElevation", 0), 0),
+        device_name,
     ]
 
 
@@ -290,6 +394,7 @@ def build_daily_row(garmin, date):
 
 
 def main():
+    logger.info("Garmin sync started (Activities + Daily, %s days)", SYNC_DAYS)
     email = os.getenv("GARMIN_EMAIL")
     password = os.getenv("GARMIN_PASSWORD")
     sheet_id = os.getenv("SHEET_ID")
@@ -314,16 +419,19 @@ def main():
     activities_sheet = spreadsheet.worksheet("Activities")
     daily_sheet = spreadsheet.worksheet("Daily")
 
-    if activities_sheet.row_values(1) != ACTIVITY_HEADERS:
-        activities_sheet.update(range_name="A1", values=[ACTIVITY_HEADERS])
-        logger.info("Updated Activities headers")
+    ensure_sheet_headers(activities_sheet, ACTIVITY_HEADERS)
+    ensure_sheet_headers(daily_sheet, DAILY_HEADERS)
 
-    if daily_sheet.row_values(1) != DAILY_HEADERS:
-        daily_sheet.update(range_name="A1", values=[DAILY_HEADERS])
-        logger.info("Updated Daily headers")
-
-    existing_activity_ids = get_existing_values(activities_sheet, 1)
-    existing_dates = get_existing_values(daily_sheet, 0)
+    activity_id_column = ACTIVITY_HEADERS.index("ID активности")
+    existing_activity_ids, existing_activity_name_keys = get_existing_activity_keys(
+        activities_sheet,
+        activity_id_column,
+    )
+    existing_dates = {
+        row[0]
+        for row in daily_sheet.get_all_values()[1:]
+        if row and row[0]
+    }
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=SYNC_DAYS)
@@ -331,22 +439,20 @@ def main():
     start_str = start.strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
 
-    training_status = safe_call(garmin.get_training_status, end_str, default={})
+    device_map = get_device_map(garmin)
 
     activities = safe_call(
         garmin.get_activities_by_date,
         start_str,
         end_str,
         default=[]
-    )
+    ) or []
 
     activity_rows = []
     for activity in activities:
-        activity_id = str(activity.get("activityId"))
-        if activity_id not in existing_activity_ids:
-            activity_rows.append(
-                build_activity_row(garmin, activity, training_status)
-            )
+        if is_activity_existing(activity, existing_activity_ids, existing_activity_name_keys):
+            continue
+        activity_rows.append(build_activity_row(activity, device_map))
 
     if activity_rows:
         activities_sheet.append_rows(activity_rows, value_input_option="USER_ENTERED")
