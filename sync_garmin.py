@@ -125,10 +125,10 @@ DAILY_HEADERS = [
 ]
 
 
-def safe_call(func, *args, default=None, retries=3):
+def safe_call(func, *args, default=None, retries=3, **kwargs):
     for attempt in range(retries):
         try:
-            result = func(*args)
+            result = func(*args, **kwargs)
             if result is None:
                 return default
             return result
@@ -276,6 +276,8 @@ def upsert_daily_rows(sheet, rows_by_date):
         sheet.append_rows(rows_to_append, value_input_option="RAW")
         logger.info("Added %s new Daily rows", len(rows_to_append))
 
+    sort_sheet_by_date(sheet, date_column=0)
+
 
 def get_daily_dates_to_sync(existing_dates):
     """
@@ -351,6 +353,38 @@ def get_existing_activity_keys(sheet, activity_id_column):
             existing_name_keys.add((activity_date, row[name_column]))
 
     return existing_ids, existing_name_keys
+
+
+def activity_sort_key(activity):
+    return (
+        get_value(activity, "startTimeLocal") or "",
+        str(activity.get("activityId", "")),
+    )
+
+
+def sort_sheet_by_date(sheet, date_column, tie_column=None):
+    """Keep data rows oldest → newest so new rows stay at the bottom."""
+    rows = sheet.get_all_values()
+    if len(rows) <= 2:
+        return
+
+    data = rows[1:]
+
+    def row_key(row):
+        date_value = ""
+        if len(row) > date_column and row[date_column]:
+            date_value = normalize_sheet_date(row[date_column])
+        tie_value = ""
+        if tie_column is not None and len(row) > tie_column:
+            tie_value = str(row[tie_column]).split(".")[0]
+        return (date_value or "9999-99-99", tie_value)
+
+    sorted_data = sorted(data, key=row_key)
+    if sorted_data == data:
+        return
+
+    sheet.update(range_name="A2", values=sorted_data, value_input_option="RAW")
+    logger.info("Sorted %s by date, oldest first", sheet.title)
 
 
 def is_activity_existing(activity, existing_ids, existing_name_keys):
@@ -763,8 +797,10 @@ def main():
         garmin.get_activities_by_date,
         start_str,
         end_str,
-        default=[]
+        default=[],
+        sortorder="asc",
     ) or []
+    activities = sorted(activities, key=activity_sort_key)
 
     activity_rows = []
     for activity in activities:
@@ -774,6 +810,12 @@ def main():
 
     if activity_rows:
         activities_sheet.append_rows(activity_rows, value_input_option="RAW")
+
+    sort_sheet_by_date(
+        activities_sheet,
+        date_column=ACTIVITY_HEADERS.index("Дата"),
+        tie_column=ACTIVITY_HEADERS.index("ID активности"),
+    )
 
     daily_dates, refresh_date = get_daily_dates_to_sync(existing_dates)
     daily_rows_by_date = {}
