@@ -1,142 +1,81 @@
+# Garmin → Google Sheets
 
-# 🏃🏽‍♂️ Garmin Run Data to Google Sheets Sync README
+Синхронизация Garmin Forerunner 255 с Google Таблицей. Раз в день забирает тренировки и дневные метрики с Garmin Connect и дописывает их на листы **Activities** и **Daily**.
 
-Automatically syncs Garmin Connect Running data to Google Sheets, runs daily.
+Лист **Сводная** скрипт не трогает — там формулы.
 
-# What this project does?
+## Что попадает в таблицу
 
-* Fetches your last 20 activities from Garmin Connect
-* Filters for running activities only (including treadmill and trail running)
-* Extracts key running metrics:
+**Activities** — все активности с 1 января 2026, не только бег. Повторно те же тренировки не добавляются (по ID).
 
-    - Distance in kilometers
-    - Duration in minutes
-    - Average pace (min/km)
-    - Average and max heart rate
-    - Calories burned
-    - Average cadence (steps per minute)
-    - Elevation gain
+**Daily** — шаги, сон, HRV, стресс, Body Battery, VO2 и остальное по дням. Сегодняшний день не пишется: он ещё не закрыт. Вчера всегда обновляется.
 
-* Avoids duplicates by checking existing dates in your sheet
-* Appends new runs to your Google Sheet
-* Runs daily, automatically
+Часовой пояс: `Asia/Novosibirsk`.
 
-# Want to sync more activities? 
-Change line:
+## Таблица
+
+В таблице должны быть два листа с такими именами:
+
+- `Activities`
+- `Daily`
+
+Заголовки скрипт создаёт и дополняет сам.
+
+Таблицу нужно расшарить на email сервис-аккаунта Google (права **Редактор**). ID таблицы — кусок из ссылки:
+
 ```
-activities = garmin.get_activities(0, 20)  # Increase this number
-```
-# Google Sheet Instructions
-
-* Create Google Sheet
-* Go to Google Sheets
-* Create a new sheet called "Garmin Data"
-* Add headers in row 1 (copy/paste below)
-    ```
-    Date	Activity Name	Distance (km)	Duration (min)	Avg Pace (min/km)	Avg HR	Max HR	Calories	Avg Cadence	Elevation Gain (m)	Activity Type
-    ```
-* If you're testing locally, then share and give editor access to your Google Cloud Service Account.
-
-# Set Up Google Cloud Credentials
-
-* Go to Google Cloud Console
-* Create a new project (or use existing)
-* Enable Google Sheets API:
-
-    - Click "Enable APIs and Services"
-    - Search "Google Sheets API"
-    - Click Enable
-
-* Enable Google Drive API
-* Create Service Account:
-
-    - Go to "IAM & Admin" → "Service Accounts"
-    - Click "Create Service Account"
-    - Name it "garmin-gsheets-run-sync" → Click Create
-    - Skip optional steps → Click Done
-
-* Create Key:
-
-    - Click on the service account you just created
-    - Go to "Keys" tab
-    - "Add Key" → "Create new key" → JSON
-    - Save the JSON file (you'll need this!)
-
-* Share your Google Sheet:
-
-    - Open your "Garmin Data" sheet
-    - Click Share
-    - Add the service account email (looks like garmin-gsheets-run-sync@your-project.iam.- gserviceaccount.com)
-    - Give it "Editor" access
-
-* Push to github
-```
-cd garmin-gsheets-run-sync
-git init
-git add .
-git commit -m "Initial commit"
-git branch -M main
-```
-* On GitHub:
-
-    - Create a new repository called "garmin-gsheets-run-sync"
-    - Follow GitHub's instructions to push:
-
-* Add GitHub Secrets
-
-    - Go to your GitHub repository
-    - Click Settings → Secrets and variables → Actions
-    - Click New repository secret and add these four secrets:
-
-* Secret 1: GARMIN_EMAIL
-```
-Name: GARMIN_EMAIL
-Value: Your Garmin Connect email
+https://docs.google.com/spreadsheets/d/SHEET_ID/edit
 ```
 
-* Secret 2: GARMIN_PASSWORD
+## GitHub Actions
+
+Workflow `Garmin to Google Sheets Sync` запускается каждый день в **11:00** по Новосибирску (`04:00 UTC`) и вручную из вкладки Actions.
+
+Секреты репозитория (Settings → Secrets and variables → Actions):
+
+| Секрет | Что положить |
+|---|---|
+| `GARMIN_EMAIL` | почта Garmin Connect |
+| `GARMIN_PASSWORD` | пароль Garmin Connect |
+| `GOOGLE_CREDENTIALS` | весь JSON ключа сервис-аккаунта |
+| `SHEET_ID` | ID таблицы из URL |
+
+Токены Garmin кэшируются между запусками, чтобы не логиниться паролем каждый день (Garmin за это часто отвечает 429).
+
+## Локальный запуск
+
 ```
-Name: GARMIN_PASSWORD
-Value: Your Garmin Connect password
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-* Secret 3: GOOGLE_CREDENTIALS
-```
-Name: GOOGLE_CREDENTIALS
-Value: The entire contents of the JSON file you downloaded (copy & paste everything)
-```
+Файл `.env` в корне (он уже в `.gitignore`):
 
-* Secret 4: SHEETS_ID
 ```
-Name: SHEETS_ID
-Value: The unique ID number in your Garmin Data Google sheets, you can find it in the URL
-    https://docs.google.com/spreadsheets/d/[SHEETS_ID]/edit?gid=379328079
+GARMIN_EMAIL=you@mail.com
+GARMIN_PASSWORD=your-password
+SHEET_ID=id-из-ссылки-на-таблицу
+GOOGLE_CREDENTIALS={"type": "service_account", "project_id": "..."}
 ```
 
-* Test It!
+`GOOGLE_CREDENTIALS` — одна строка, весь JSON ключа.
 
-    - Go to your repository
-    - Click Actions tab
-    - Click on "Garmin to Google Sheets Sync" workflow
-    - Click Run workflow → Run workflow (green button)
-    - Watch it run! Click on the running job to see logs
-    - Check your Google Sheet - you should see data appear!
-
-* Verify Scheduling
-    * The workflow is set to run automatically every day at 6 AM UTC. You can:
-
-    - Change the cron schedule in garmin-sync.yml
-    - Run manually anytime using "Run workflow" button
-    - Check the Actions tab to see run history
-
-# Testing Locally
-
-* In your project, create a .env file, add it to .gitignore and add with your own credentials:
 ```
-GARMIN_EMAIL=your@mail.com
-GARMIN_PASSWORD=yourpasswords
-SHEET_ID=get from Gsheets URL
-GOOGLE_CREDENTIALS={"type": "service_account","project_id": ...}
+python sync_garmin.py
 ```
-# Future improvements
-* Add more activities
+
+## Настройки
+
+| Переменная | По умолчанию | Зачем |
+|---|---|---|
+| `SYNC_START_DATE` | `2026-01-01` | с какой даты забирать активности и Daily |
+| `SYNC_TIMEZONE` | `Asia/Novosibirsk` | «сегодня» и «вчера» |
+| `GARMIN_TOKEN_DIR` | `~/.garth` | где хранить сессию Garmin |
+
+## Google Cloud (если ключа ещё нет)
+
+1. Создать проект в [Google Cloud Console](https://console.cloud.google.com/).
+2. Включить Google Sheets API и Google Drive API.
+3. IAM → Service Accounts → создать аккаунт → Keys → JSON.
+4. Поделиться таблицей с email этого аккаунта, роль Редактор.
