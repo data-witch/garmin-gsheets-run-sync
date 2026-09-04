@@ -12,7 +12,7 @@ GOOGLE_CREDENTIALS
 SHEET_ID
 
 Optional:
-SYNC_DAYS
+SYNC_START_DATE  (default 2026-01-01)
 GARMIN_TOKEN_DIR
 SYNC_TIMEZONE
 """
@@ -20,8 +20,15 @@ SYNC_TIMEZONE
 import os
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import gspread
 from garminconnect import Garmin
@@ -36,7 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-SYNC_DAYS = int(os.getenv("SYNC_DAYS", "210"))
+SYNC_START_DATE = os.getenv("SYNC_START_DATE", "2026-01-01")
 SYNC_TIMEZONE = os.getenv("SYNC_TIMEZONE", "Asia/Novosibirsk")
 
 TOKEN_DIR = os.path.expanduser(
@@ -44,6 +51,16 @@ TOKEN_DIR = os.path.expanduser(
         "GARMIN_TOKEN_DIR",
         "~/.garth"
     )
+)
+
+DATE_PARSE_FORMATS = (
+    "%Y-%m-%d",
+    "%d.%m.%Y",
+    "%d.%m.%y",
+    "%m/%d/%Y",
+    "%d/%m/%Y",
+    "%Y/%m/%d",
+    "%d-%m-%Y",
 )
 
 
@@ -108,19 +125,31 @@ DAILY_HEADERS = [
 ]
 
 
-def safe_call(func, *args, default=None):
-    try:
-        result = func(*args)
-        if result is None:
+def safe_call(func, *args, default=None, retries=3):
+    for attempt in range(retries):
+        try:
+            result = func(*args)
+            if result is None:
+                return default
+            return result
+        except Exception as e:
+            message = str(e)
+            if "429" in message and attempt < retries - 1:
+                wait_seconds = 30 * (attempt + 1)
+                logger.warning("Rate limited, sleeping %ss", wait_seconds)
+                time.sleep(wait_seconds)
+                continue
+            logger.warning(
+                "API error %s: %s",
+                getattr(func, "__name__", "unknown"),
+                e
+            )
             return default
-        return result
-    except Exception as e:
-        logger.warning(
-            "API error %s: %s",
-            getattr(func, "__name__", "unknown"),
-            e
-        )
-        return default
+    return default
+
+
+def as_dict(value):
+    return value if isinstance(value, dict) else {}
 
 
 def get_value(data, key, default=""):
@@ -133,29 +162,11 @@ def get_value(data, key, default=""):
 
 
 def connect_garmin(email, password):
+    """Login once; garminconnect restores/saves tokens in TOKEN_DIR."""
+    os.makedirs(TOKEN_DIR, exist_ok=True)
     garmin = Garmin(email, password)
-
-    if os.path.exists(TOKEN_DIR):
-        try:
-            garmin.login(tokenstore=TOKEN_DIR)
-            logger.info("Garmin login by token")
-            return garmin
-        except Exception:
-            logger.info("Token expired")
-
-    garmin.login()
-
-    try:
-        os.makedirs(TOKEN_DIR, exist_ok=True)
-        if hasattr(garmin, 'garth') and hasattr(garmin.garth, 'dump'):
-            garmin.garth.dump(TOKEN_DIR)
-            logger.info("Tokens saved to %s", TOKEN_DIR)
-        elif hasattr(garmin, 'dump_tokens'):
-            garmin.dump_tokens(TOKEN_DIR)
-            logger.info("Tokens saved to %s", TOKEN_DIR)
-    except Exception as e:
-        logger.warning("Token save error: %s", e)
-
+    garmin.login(TOKEN_DIR)
+    logger.info("Garmin login succeeded (tokenstore=%s)", TOKEN_DIR)
     return garmin
 
 
@@ -191,8 +202,48 @@ def pick_value(*values, default=""):
     return default
 
 
+def normalize_sheet_date(value):
+    """Turn Sheets display dates (30.08.2026, 8/30/2026, ISO) into YYYY-MM-DD."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    elif " " in text:
+        text = text.split(" ", 1)[0]
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    for fmt in DATE_PARSE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return text
+
+
+def entry_date(entry):
+    return normalize_sheet_date(
+        pick_value(
+            get_value(entry, "calendarDate"),
+            get_value(entry, "date"),
+            default="",
+        )
+    )
+
+
 def get_local_today():
     return datetime.now(ZoneInfo(SYNC_TIMEZONE)).date()
+
+
+def get_sync_start_date():
+    normalized = normalize_sheet_date(SYNC_START_DATE) or "2026-01-01"
+    try:
+        return datetime.strptime(normalized, "%Y-%m-%d").date()
+    except ValueError:
+        logger.warning("Invalid SYNC_START_DATE=%s, using 2026-01-01", SYNC_START_DATE)
+        return datetime(2026, 1, 1).date()
 
 
 def get_daily_row_index(sheet):
@@ -200,7 +251,7 @@ def get_daily_row_index(sheet):
     date_to_row = {}
     for row_number, row in enumerate(rows[1:], start=2):
         if row and row[0]:
-            date_to_row[row[0]] = row_number
+            date_to_row[normalize_sheet_date(row[0])] = row_number
     return date_to_row
 
 
@@ -215,26 +266,30 @@ def upsert_daily_rows(sheet, rows_by_date):
             sheet.update(
                 range_name=f"A{row_number}",
                 values=[row],
-                value_input_option="USER_ENTERED",
+                value_input_option="RAW",
             )
             logger.info("Updated Daily row for %s (row %s)", date_str, row_number)
         else:
             rows_to_append.append(row)
 
     if rows_to_append:
-        sheet.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+        sheet.append_rows(rows_to_append, value_input_option="RAW")
         logger.info("Added %s new Daily rows", len(rows_to_append))
 
 
 def get_daily_dates_to_sync(existing_dates):
     """
-    First run: backfill all missing days in the SYNC_DAYS window.
+    First run: backfill all missing days from SYNC_START_DATE through yesterday.
     Regular run: add only missing days and always refresh yesterday.
     Today is never written — the day is still in progress.
     """
     today = get_local_today()
     yesterday = today - timedelta(days=1)
-    start_date = yesterday - timedelta(days=SYNC_DAYS - 1)
+    start_date = get_sync_start_date()
+    refresh_date = yesterday.isoformat()
+
+    if start_date > yesterday:
+        return [], refresh_date
 
     dates_to_sync = set()
     current = start_date
@@ -244,8 +299,8 @@ def get_daily_dates_to_sync(existing_dates):
             dates_to_sync.add(date_str)
         current += timedelta(days=1)
 
-    dates_to_sync.add(yesterday.isoformat())
-    return sorted(dates_to_sync), yesterday.isoformat()
+    dates_to_sync.add(refresh_date)
+    return sorted(dates_to_sync), refresh_date
 
 
 def get_device_map(garmin):
@@ -260,16 +315,20 @@ def get_device_map(garmin):
 def ensure_sheet_headers(sheet, expected_headers):
     current_headers = sheet.row_values(1)
     if not current_headers:
-        sheet.update(range_name="A1", values=[expected_headers])
+        sheet.update(range_name="A1", values=[expected_headers], value_input_option="RAW")
         logger.info("Created headers")
         return
 
     missing = [header for header in expected_headers if header not in current_headers]
     if missing:
-        sheet.update(range_name="A1", values=[current_headers + missing])
+        sheet.update(
+            range_name="A1",
+            values=[current_headers + missing],
+            value_input_option="RAW",
+        )
         logger.info("Added missing headers: %s", ", ".join(missing))
     elif current_headers[:len(expected_headers)] != expected_headers:
-        sheet.update(range_name="A1", values=[expected_headers])
+        sheet.update(range_name="A1", values=[expected_headers], value_input_option="RAW")
         logger.info("Updated headers")
 
 
@@ -285,10 +344,11 @@ def get_existing_activity_keys(sheet, activity_id_column):
         if len(row) <= date_column or not row[date_column]:
             continue
 
+        activity_date = normalize_sheet_date(row[date_column])
         if len(row) > activity_id_column and row[activity_id_column]:
-            existing_ids.add(str(row[activity_id_column]))
+            existing_ids.add(str(row[activity_id_column]).split(".")[0])
         elif len(row) > name_column and row[name_column]:
-            existing_name_keys.add((row[date_column], row[name_column]))
+            existing_name_keys.add((activity_date, row[name_column]))
 
     return existing_ids, existing_name_keys
 
@@ -377,6 +437,18 @@ def build_activity_row(activity, device_map):
     ]
 
 
+def body_battery_point_level(point):
+    if isinstance(point, (list, tuple)) and len(point) >= 2:
+        return point[1]
+    if isinstance(point, dict):
+        return pick_value(
+            point.get("bodyBatteryLevel"),
+            point.get("value"),
+            default=None,
+        )
+    return None
+
+
 def parse_body_battery(summary, battery_payload, date_str):
     battery_max = pick_value(
         get_value(summary, "bodyBatteryHighestValue"),
@@ -390,147 +462,231 @@ def parse_body_battery(summary, battery_payload, date_str):
         return battery_max, battery_min
 
     values = []
-    if isinstance(battery_payload, list):
-        for entry in battery_payload:
-            if entry.get("calendarDate") not in (date_str, None, ""):
-                continue
+    entries = battery_payload if isinstance(battery_payload, list) else []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if entry_date(entry) not in ("", date_str):
+            continue
 
-            highest = pick_value(
-                entry.get("highestBodyBatteryValue"),
-                entry.get("bodyBatteryHighestValue"),
-                default="",
-            )
-            lowest = pick_value(
-                entry.get("lowestBodyBatteryValue"),
-                entry.get("bodyBatteryLowestValue"),
-                default="",
-            )
-            if highest != "":
-                battery_max = highest
-            if lowest != "":
-                battery_min = lowest
+        highest = pick_value(
+            entry.get("highestBodyBatteryValue"),
+            entry.get("bodyBatteryHighestValue"),
+            default="",
+        )
+        lowest = pick_value(
+            entry.get("lowestBodyBatteryValue"),
+            entry.get("bodyBatteryLowestValue"),
+            default="",
+        )
+        if highest != "":
+            battery_max = highest
+        if lowest != "":
+            battery_min = lowest
 
-            for point in entry.get("bodyBatteryValuesArray") or []:
-                level = point.get("bodyBatteryLevel")
-                if level is not None:
-                    values.append(level)
-
-            for key in ("value", "charged", "drained"):
-                level = entry.get(key)
-                if isinstance(level, (int, float)):
-                    values.append(level)
+        for point in entry.get("bodyBatteryValuesArray") or []:
+            level = body_battery_point_level(point)
+            if isinstance(level, (int, float)):
+                values.append(level)
 
     if values:
-        return max(values), min(values)
+        parsed_max, parsed_min = max(values), min(values)
+        battery_max = pick_value(battery_max, parsed_max, default="")
+        battery_min = pick_value(battery_min, parsed_min, default="")
     return battery_max, battery_min
 
 
-def parse_vo2_max(garmin, date_str, training_status=None):
-    training_status = training_status if training_status is not None else safe_call(
-        garmin.get_training_status,
-        date_str,
-        default={},
-    ) or {}
-
-    most_recent_vo2max = training_status.get("mostRecentVO2Max") or {}
+def vo2_from_training_status(training_status):
+    most_recent_vo2max = as_dict(training_status).get("mostRecentVO2Max") or {}
     vo2_running = pick_value(
-        (most_recent_vo2max.get("generic") or {}).get("vo2MaxValue"),
+        as_dict(most_recent_vo2max.get("generic")).get("vo2MaxValue"),
         default="",
     )
     vo2_cycling = pick_value(
-        (most_recent_vo2max.get("cycling") or {}).get("vo2MaxValue"),
+        as_dict(most_recent_vo2max.get("cycling")).get("vo2MaxValue"),
         default="",
     )
-    if vo2_running != "" or vo2_cycling != "":
-        return vo2_running, vo2_cycling
+    return vo2_running, vo2_cycling
 
-    max_metrics = safe_call(garmin.get_max_metrics, date_str, default={}) or {}
-    if isinstance(max_metrics, list):
-        for entry in max_metrics:
-            if entry.get("calendarDate") not in (date_str, None, ""):
-                continue
-            vo2_running = pick_value(entry.get("vo2MaxValue"), vo2_running, default="")
-            vo2_cycling = pick_value(entry.get("vo2MaxCyclingValue"), vo2_cycling, default="")
-    elif isinstance(max_metrics, dict):
-        metrics_list = max_metrics.get("metricsMap") or max_metrics.get("metricDTOs") or []
-        if isinstance(metrics_list, list):
-            for entry in metrics_list:
-                metric_type = entry.get("metricsType") or entry.get("metricType")
-                if metric_type in ("VO2_MAX", "vo2max", "generic"):
-                    vo2_running = pick_value(entry.get("vo2MaxValue"), vo2_running, default="")
-                if metric_type in ("CYCLING_VO2_MAX", "cycling_vo2max", "cycling"):
-                    vo2_cycling = pick_value(entry.get("vo2MaxValue"), vo2_cycling, default="")
+
+def vo2_from_max_metrics(max_metrics, date_str):
+    vo2_running, vo2_cycling = "", ""
+
+    def take_from_entry(entry):
+        nonlocal vo2_running, vo2_cycling
+        if not isinstance(entry, dict):
+            return
+        entry_day = entry_date(entry)
+        if entry_day not in ("", date_str):
+            return
         vo2_running = pick_value(
-            max_metrics.get("vo2MaxValue"),
-            (max_metrics.get("generic") or {}).get("vo2MaxValue"),
+            entry.get("vo2MaxValue"),
+            entry.get("vo2MaxPreciseValue"),
             vo2_running,
             default="",
         )
         vo2_cycling = pick_value(
-            max_metrics.get("vo2MaxCyclingValue"),
-            (max_metrics.get("cycling") or {}).get("vo2MaxValue"),
+            entry.get("vo2MaxCyclingValue"),
             vo2_cycling,
             default="",
         )
 
+    if isinstance(max_metrics, list):
+        for entry in max_metrics:
+            take_from_entry(entry)
+        return vo2_running, vo2_cycling
+
+    max_metrics = as_dict(max_metrics)
+    for key in ("maxMetricValues", "metrics", "metricDTOs"):
+        items = max_metrics.get(key)
+        if isinstance(items, list):
+            for entry in items:
+                take_from_entry(entry)
+
+    metrics_map = max_metrics.get("metricsMap")
+    if isinstance(metrics_map, list):
+        for entry in metrics_map:
+            metric_type = get_value(entry, "metricsType") or get_value(entry, "metricType")
+            if metric_type in ("VO2_MAX", "vo2max", "generic"):
+                vo2_running = pick_value(entry.get("vo2MaxValue"), vo2_running, default="")
+            if metric_type in ("CYCLING_VO2_MAX", "cycling_vo2max", "cycling"):
+                vo2_cycling = pick_value(entry.get("vo2MaxValue"), vo2_cycling, default="")
+    elif isinstance(metrics_map, dict):
+        for metric_type, entries in metrics_map.items():
+            items = entries if isinstance(entries, list) else [entries]
+            for entry in items:
+                if not isinstance(entry, dict):
+                    continue
+                if metric_type in ("VO2_MAX", "vo2max", "generic"):
+                    vo2_running = pick_value(
+                        entry.get("vo2MaxValue"),
+                        vo2_running,
+                        default="",
+                    )
+                if metric_type in ("CYCLING_VO2_MAX", "cycling_vo2max", "cycling"):
+                    vo2_cycling = pick_value(
+                        entry.get("vo2MaxValue"),
+                        vo2_cycling,
+                        default="",
+                    )
+
+    vo2_running = pick_value(
+        max_metrics.get("vo2MaxValue"),
+        as_dict(max_metrics.get("generic")).get("vo2MaxValue"),
+        vo2_running,
+        default="",
+    )
+    vo2_cycling = pick_value(
+        max_metrics.get("vo2MaxCyclingValue"),
+        as_dict(max_metrics.get("cycling")).get("vo2MaxValue"),
+        vo2_cycling,
+        default="",
+    )
     return vo2_running, vo2_cycling
 
 
-def build_daily_row(garmin, date_str):
-    summary = safe_call(garmin.get_user_summary, date_str, default={}) or {}
-    stress_data = safe_call(garmin.get_all_day_stress, date_str, default={}) or {}
-    if not stress_data:
-        stress_data = safe_call(garmin.get_stress_data, date_str, default={}) or {}
-    battery_payload = safe_call(garmin.get_body_battery, date_str, date_str, default=[]) or []
-    hrv = safe_call(garmin.get_hrv_data, date_str, default={}) or {}
-    spo2 = safe_call(garmin.get_spo2_data, date_str, default={}) or {}
-    respiration = safe_call(garmin.get_respiration_data, date_str, default={}) or {}
-    sleep = safe_call(garmin.get_sleep_data, date_str, default={}) or {}
-    training_status = safe_call(garmin.get_training_status, date_str, default={}) or {}
+def fetch_body_battery_by_date(garmin, start_date, end_date):
+    payload = safe_call(garmin.get_body_battery, start_date, end_date, default=[]) or []
+    by_date = {}
+    if not isinstance(payload, list):
+        return by_date
+    for entry in payload:
+        date_key = entry_date(entry)
+        if date_key:
+            by_date.setdefault(date_key, []).append(entry)
+    return by_date
+
+
+def fetch_max_metrics(garmin, start_date, end_date):
+    if hasattr(garmin, "get_max_metrics_range"):
+        return safe_call(garmin.get_max_metrics_range, start_date, end_date, default={}) or {}
+    return safe_call(garmin.get_max_metrics, end_date, default={}) or {}
+
+
+def build_daily_row(
+    garmin,
+    date_str,
+    battery_payload=None,
+    max_metrics=None,
+    fetch_training_status=False,
+):
+    summary = as_dict(safe_call(garmin.get_user_summary, date_str, default={}))
 
     steps = pick_value(get_value(summary, "totalSteps"), default="")
     floors = pick_value(get_value(summary, "floorsAscended"), default="")
     resting_hr = pick_value(get_value(summary, "restingHeartRate"), default="")
 
-    stress_level = pick_value(
-        get_value(summary, "averageStressLevel"),
-        stress_data.get("avgStressLevel"),
-        stress_data.get("averageStressLevel"),
-        stress_data.get("stressLevel"),
-        default="",
-    )
+    stress_level = pick_value(get_value(summary, "averageStressLevel"), default="")
+    if stress_level == "":
+        stress_data = as_dict(safe_call(garmin.get_all_day_stress, date_str, default={}))
+        if not stress_data:
+            stress_data = as_dict(safe_call(garmin.get_stress_data, date_str, default={}))
+        stress_level = pick_value(
+            stress_data.get("avgStressLevel"),
+            stress_data.get("averageStressLevel"),
+            stress_data.get("stressLevel"),
+            default="",
+        )
 
+    if battery_payload is None:
+        battery_max = pick_value(get_value(summary, "bodyBatteryHighestValue"), default="")
+        battery_min = pick_value(get_value(summary, "bodyBatteryLowestValue"), default="")
+        if battery_max == "" or battery_min == "":
+            battery_payload = safe_call(
+                garmin.get_body_battery,
+                date_str,
+                date_str,
+                default=[],
+            ) or []
+        else:
+            battery_payload = []
     battery_max, battery_min = parse_body_battery(summary, battery_payload, date_str)
 
-    hrv_summary = hrv.get("hrvSummary") or {}
+    hrv = as_dict(safe_call(garmin.get_hrv_data, date_str, default={}))
+    hrv_summary = as_dict(hrv.get("hrvSummary"))
     hrv_avg = pick_value(hrv_summary.get("lastNightAvg"), default="")
     hrv_status = pick_value(hrv_summary.get("status"), default="")
 
     respiration_value = pick_value(
         get_value(summary, "averageWakingRespirationValue"),
         get_value(summary, "averageSleepRespirationValue"),
-        respiration.get("avgWakingRespirationValue"),
-        respiration.get("avgSleepRespirationValue"),
-        respiration.get("avgWakingRespiration"),
         default="",
     )
+    if respiration_value == "":
+        respiration = as_dict(safe_call(garmin.get_respiration_data, date_str, default={}))
+        respiration_value = pick_value(
+            respiration.get("avgWakingRespirationValue"),
+            respiration.get("avgSleepRespirationValue"),
+            respiration.get("avgWakingRespiration"),
+            default="",
+        )
 
-    spo2_value = pick_value(
-        get_value(summary, "averageSpo2"),
-        spo2.get("averageSpO2"),
-        spo2.get("avgSleepSpO2"),
-        spo2.get("lowestSpO2"),
-        default="",
-    )
+    spo2_value = pick_value(get_value(summary, "averageSpo2"), default="")
+    if spo2_value == "":
+        spo2 = as_dict(safe_call(garmin.get_spo2_data, date_str, default={}))
+        spo2_value = pick_value(
+            spo2.get("averageSpO2"),
+            spo2.get("avgSleepSpO2"),
+            spo2.get("lowestSpO2"),
+            default="",
+        )
 
-    sleep_dto = sleep.get("dailySleepDTO") or {}
+    sleep = as_dict(safe_call(garmin.get_sleep_data, date_str, default={}))
+    sleep_dto = as_dict(sleep.get("dailySleepDTO"))
     sleep_time = pick_value(get_value(sleep_dto, "sleepTimeSeconds"), default="")
+    sleep_scores = as_dict(sleep_dto.get("sleepScores"))
+    overall_score = sleep_scores.get("overall")
     sleep_score = pick_value(
-        (sleep_dto.get("sleepScores") or {}).get("overall", {}).get("value"),
+        overall_score.get("value") if isinstance(overall_score, dict) else None,
         default="",
     )
 
-    vo2_running, vo2_cycling = parse_vo2_max(garmin, date_str, training_status)
+    vo2_running, vo2_cycling = vo2_from_max_metrics(max_metrics, date_str)
+    if fetch_training_status:
+        training_status = as_dict(safe_call(garmin.get_training_status, date_str, default={}))
+        ts_running, ts_cycling = vo2_from_training_status(training_status)
+        vo2_running = pick_value(ts_running, vo2_running, default="")
+        vo2_cycling = pick_value(ts_cycling, vo2_cycling, default="")
 
     return [
         date_str,
@@ -552,7 +708,7 @@ def build_daily_row(garmin, date_str):
 
 
 def main():
-    logger.info("Garmin sync started (Activities + Daily, %s days)", SYNC_DAYS)
+    logger.info("Garmin sync started (Activities + Daily from %s)", SYNC_START_DATE)
     email = os.getenv("GARMIN_EMAIL")
     password = os.getenv("GARMIN_PASSWORD")
     sheet_id = os.getenv("SHEET_ID")
@@ -589,7 +745,7 @@ def main():
 
     today_local = get_local_today()
     yesterday_local = (today_local - timedelta(days=1)).isoformat()
-    start_date = today_local - timedelta(days=SYNC_DAYS)
+    start_date = get_sync_start_date()
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = today_local.strftime("%Y-%m-%d")
 
@@ -617,13 +773,30 @@ def main():
         activity_rows.append(build_activity_row(activity, device_map))
 
     if activity_rows:
-        activities_sheet.append_rows(activity_rows, value_input_option="USER_ENTERED")
+        activities_sheet.append_rows(activity_rows, value_input_option="RAW")
 
     daily_dates, refresh_date = get_daily_dates_to_sync(existing_dates)
     daily_rows_by_date = {}
+    battery_by_date = {}
+    max_metrics = {}
+    if daily_dates:
+        logger.info("Prefetching Body Battery and VO2 for %s .. %s", daily_dates[0], daily_dates[-1])
+        battery_by_date = fetch_body_battery_by_date(garmin, daily_dates[0], daily_dates[-1])
+        max_metrics = fetch_max_metrics(garmin, daily_dates[0], daily_dates[-1])
+
     for date_str in daily_dates:
-        logger.info("Fetching Daily metrics for %s%s", date_str, " (refresh)" if date_str == refresh_date else "")
-        daily_rows_by_date[date_str] = build_daily_row(garmin, date_str)
+        logger.info(
+            "Fetching Daily metrics for %s%s",
+            date_str,
+            " (refresh)" if date_str == refresh_date else "",
+        )
+        daily_rows_by_date[date_str] = build_daily_row(
+            garmin,
+            date_str,
+            battery_payload=battery_by_date.get(date_str, []),
+            max_metrics=max_metrics,
+            fetch_training_status=(date_str == refresh_date),
+        )
 
     if daily_rows_by_date:
         upsert_daily_rows(daily_sheet, daily_rows_by_date)
