@@ -397,6 +397,29 @@ def speed_to_pace_min_per_km(speed_mps: Any) -> Any:
     return round(1000 / (speed * 60), 2)
 
 
+def column_letter(index: int) -> str:
+    number = index + 1
+    letters = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def sheets_date_number(value: Any) -> Any:
+    """Серийный номер даты Google Sheets. Число не получает ведущий апостроф, в отличие от текста."""
+    iso = normalize_sheet_date(value)
+    if not iso:
+        return ""
+    day = datetime.strptime(iso, "%Y-%m-%d").date()
+    return (day - date(1899, 12, 30)).days
+
+
+def format_date_column(sheet: gspread.Worksheet, column_index: int) -> None:
+    letter = column_letter(column_index)
+    sheet.format(f"{letter}:{letter}", {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}})
+
+
 def round_value(value: Any, digits: int = 2) -> Any:
     number = to_float(value)
     if number is None:
@@ -421,6 +444,7 @@ def upsert_daily_rows(sheet: gspread.Worksheet, rows_by_date: Mapping[str, Seque
     rows_to_append = []
     for date_str in sorted(rows_by_date):
         row = list(rows_by_date[date_str])
+        row[0] = sheets_date_number(row[0])
         if date_str in date_to_row:
             row_number = date_to_row[date_str]
             sheet.update(range_name=f"A{row_number}", values=[row], value_input_option="RAW")
@@ -428,8 +452,9 @@ def upsert_daily_rows(sheet: gspread.Worksheet, rows_by_date: Mapping[str, Seque
         else:
             rows_to_append.append(row)
     if rows_to_append:
-        sheet.append_rows(rows_to_append, value_input_option="USER_ENTERED")
+        sheet.append_rows(rows_to_append, value_input_option="RAW")
         logger.info("Added %s new Daily rows", len(rows_to_append))
+    format_date_column(sheet, 0)
     last_row = len(sheet.col_values(1))
     if last_row > 2:
         sheet.sort((1, "asc"), range=f"A2:AZ{last_row}")
@@ -677,7 +702,7 @@ def build_activity_row(activity: Mapping[str, Any], device_map: Mapping[str, str
     device_id = str(get_value(activity, "deviceId"))
     return [
         activity_type_key(activity),
-        activity_date,
+        sheets_date_number(activity_date),
         "Да" if activity.get("favorite") else "Нет",
         get_value(activity, "activityName"),
         round_value(distance / 1000) if distance else 0,
@@ -1040,6 +1065,7 @@ def main() -> None:
 
     if activity_rows:
         activities_sheet.append_rows(activity_rows, value_input_option="RAW")
+        format_date_column(activities_sheet, ACTIVITY_HEADERS.index("Дата"))
 
     available_daily_dates = discover_daily_dates(garmin, activity_dates)
     daily_dates, refresh_date = get_daily_dates_to_sync(existing_dates, available_daily_dates)
