@@ -374,32 +374,12 @@ def get_sync_start_date() -> Optional[date]:
     return datetime.strptime(normalized, "%Y-%m-%d").date()
 
 
-def token_files_ready(token_dir: str) -> bool:
-    return all(
-        os.path.isfile(os.path.join(token_dir, name))
-        for name in ("oauth1_token.json", "oauth2_token.json")
-    )
-
-
 def connect_garmin(email: str, password: str) -> Garmin:
-    """Сначала поднимает сессию из токенов Garth. Полный логин — только если токенов нет или они отклонены."""
+    """Вход через tokenstore. Библиотека сама берёт сохранённую сессию или логинится паролем."""
     os.makedirs(TOKEN_DIR, exist_ok=True)
     garmin = Garmin(email, password)
-    if token_files_ready(TOKEN_DIR):
-        try:
-            garmin.login(TOKEN_DIR)
-            logger.info("Garmin session restored from tokenstore %s", TOKEN_DIR)
-            return garmin
-        except Exception as exc:
-            logger.warning(
-                "Stored Garmin tokens were rejected (%s). Password login will refresh the tokenstore.",
-                type(exc).__name__,
-            )
-    garmin.garth.login(email, password)
-    garmin.display_name = garmin.garth.profile["displayName"]
-    garmin.full_name = garmin.garth.profile["fullName"]
-    garmin.garth.dump(TOKEN_DIR)
-    logger.info("Garmin password login succeeded, tokens saved to %s", TOKEN_DIR)
+    garmin.login(TOKEN_DIR)
+    logger.info("Garmin login succeeded, tokens in %s", TOKEN_DIR)
     return garmin
 
 
