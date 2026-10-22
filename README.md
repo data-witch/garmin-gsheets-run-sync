@@ -33,7 +33,7 @@ https://docs.google.com/spreadsheets/d/SHEET_ID/edit
 
 ## GitHub Actions
 
-Workflow `Garmin to Google Sheets Sync` запускается каждый день в **11:00** по Новосибирску (`04:00 UTC`) и вручную из вкладки Actions.
+Workflow `Garmin to Google Sheets Sync` запускается дважды в сутки по Новосибирску: в **08:00** (сон и дневные метрики за вчера) и в **21:00** (тренировка этого вечера). Вручную его можно запустить из вкладки Actions, если тренировка закончилась в другое время.
 
 Секреты репозитория (Settings → Secrets and variables → Actions):
 

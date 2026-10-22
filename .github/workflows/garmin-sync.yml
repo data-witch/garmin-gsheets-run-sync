@@ -2,8 +2,10 @@ name: Garmin to Google Sheets Sync
 
 on:
   schedule:
-    # 04:00 UTC = 11:00 Asia/Novosibirsk
-    - cron: '0 4 * * *'
+    # 01:00 UTC = 08:00 Asia/Novosibirsk, утро: сон и пульс за ночь
+    - cron: '0 1 * * *'
+    # 14:00 UTC = 21:00 Asia/Novosibirsk, вечер: тренировка уже в Garmin
+    - cron: '0 14 * * *'
   workflow_dispatch:
 
 jobs:
