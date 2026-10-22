@@ -2,3 +2,4 @@ garminconnect
 gspread
 google-auth
 python-dotenv
+tzdata
