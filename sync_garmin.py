@@ -91,6 +91,11 @@ ACTIVITY_HEADERS = [
     "Мин. высота (м)",
     "Макс. высота (м)",
     "Устройство",
+    "ЧСС зона 1 (мин)",
+    "ЧСС зона 2 (мин)",
+    "ЧСС зона 3 (мин)",
+    "ЧСС зона 4 (мин)",
+    "ЧСС зона 5 (мин)",
 ]
 
 DAILY_HEADERS = [
@@ -1017,6 +1022,33 @@ def main():
         ACTIVITY_REFRESH_DAYS,
     )
 
+def require_env() -> tuple[str, str, str, str]:
+    email = os.getenv("GARMIN_EMAIL", "").strip()
+    password = os.getenv("GARMIN_PASSWORD", "")
+    sheet_id = os.getenv("SHEET_ID", "").strip()
+    credentials = os.getenv("GOOGLE_CREDENTIALS", "")
+    missing = [
+        name
+        for name, value in (
+            ("GARMIN_EMAIL", email),
+            ("GARMIN_PASSWORD", password),
+            ("SHEET_ID", sheet_id),
+            ("GOOGLE_CREDENTIALS", credentials),
+        )
+        if not value
+    ]
+    if missing:
+        raise SyncConfigError("Missing environment variables: " + ", ".join(missing))
+    return email, password, sheet_id, credentials
+
+
+def main() -> None:
+    configure_logging()
+    logger.info(
+        "Garmin sync started (Activities + Daily, start=%s)",
+        SYNC_START_DATE or "whole history",
+    )
+    email, password, sheet_id, credentials = require_env()
     garmin = connect_garmin(email, password)
     try:
         creds = Credentials.from_service_account_info(
